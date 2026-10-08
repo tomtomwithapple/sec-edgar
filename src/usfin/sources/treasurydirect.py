@@ -19,14 +19,25 @@ discount rate, investment rate or (FRNs) discount margin is set. Upserts never l
 never overwrite a stored value with a blank one, typed or in `payload`, since a feed may list an
 auctioned security as it stood before its auction. A key outside `KNOWN_FIELDS` that no stored
 payload has yet raises `schema_drift` (subject `tsy_security`); it is kept in `payload`.
+
+Backfill (`usfin td backfill [--from]`, `backfill()`): one `search` per calendar month from
+`--from` (default `EARLIEST_AUCTION`, the oldest auction `search` returns, probed 2026-10-08) to
+today, archived as `td_search` so `usfin reparse treasurydirect` replays it with the job's own
+parser. A month that has ended and whose exact URL already has a 200 `td_search` response is
+skipped, so an interrupted backfill resumes where it stopped; the open month is fetched each time
+(its URL ends at today, so it is fetched whole once it has ended). Each window is parsed in its
+own transaction right after its fetch, and the `results` watermark only ever moves forward.
 """
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
-from datetime import date, timedelta
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+
+import httpx
 
 from usfin import alerts, jobs, raw
 
@@ -34,6 +45,9 @@ BASE = "https://www.treasurydirect.gov/TA_WS/securities"
 SOURCE = "treasurydirect"
 TABLE = "tsy_security"
 WINDOW_DAYS = 7
+EARLIEST_AUCTION = date(1979, 10, 31)
+"""Oldest auction date `search` returns (probed 2026-10-08: nothing from 1900-01-01 to
+1979-10-30; 171 records from 1979-10-31 to 1980-12-31)."""
 DATASET_KEY = {"td_announced": "announced", "td_auctioned": "results", "td_search": "results"}
 log = logging.getLogger("usfin.treasurydirect")
 
@@ -279,10 +293,7 @@ def _fetch(ctx: "jobs.JobContext", key: str) -> list[int]:
     return [_get(ctx, url, "td_search" if "/search?" in url else "td_auctioned")]
 
 
-def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
-    dataset = ctx.con.execute(
-        "SELECT dataset FROM raw_response WHERE id = ?", [raw_id]
-    ).fetchone()[0]
+def _records(ctx: "jobs.JobContext", raw_id: int) -> list[dict[str, Any]]:
     with raw.open(ctx.con, raw_id, raw_dir=ctx.settings.raw_dir) as fh:
         records = json.loads(fh.read())
     if not isinstance(records, list):
@@ -290,8 +301,12 @@ def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
             f"raw_response {raw_id}: expected a JSON list, got {type(records).__name__}",
             raw_id=raw_id,
         )
+    return records
+
+
+def _store(ctx: "jobs.JobContext", key: str, records: list[dict[str, Any]]) -> int:
+    """Upsert `records` and propose `key`'s watermark (never back); return rows changed."""
     rows = upsert(ctx, records)
-    key = DATASET_KEY[dataset]
     parsed = [parse_record(r) for r in records]
     if key == "results":
         parsed = [r for r in parsed if r["status"] == "auctioned"]
@@ -302,6 +317,13 @@ def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
     if dates:
         ctx.advance(key, max(dates))
     return rows
+
+
+def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
+    dataset = ctx.con.execute(
+        "SELECT dataset FROM raw_response WHERE id = ?", [raw_id]
+    ).fetchone()[0]
+    return _store(ctx, DATASET_KEY[dataset], _records(ctx, raw_id))
 
 
 _OBSERVED = {
@@ -322,3 +344,101 @@ JOB = jobs.REGISTRY.register(
 )
 """Announced, then auction results; S14 compares `tsy_security` with `fd_auctions`."""
 
+
+
+# --- backfill (`usfin td backfill`) ------------------------------------------------------------
+
+
+def month_windows(start: date, today: date) -> list[tuple[date, date]]:
+    """Calendar-month windows (both ends inclusive) from `start` to `today`."""
+    out = []
+    lo = start
+    while lo <= today:
+        first_next = date(lo.year + lo.month // 12, lo.month % 12 + 1, 1)
+        hi = min(first_next - timedelta(days=1), today)
+        out.append((lo, hi))
+        lo = first_next
+    return out
+
+
+@dataclass(frozen=True)
+class BackfillResult:
+    windows: int
+    fetched: int
+    skipped: int
+    rows: int
+    records: int
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _fetched(con, url: str) -> bool:
+    return (
+        con.execute(
+            "SELECT count(*) FROM raw_response"
+            " WHERE dataset = 'td_search' AND url = ? AND http_status = 200",
+            [str(httpx.URL(url))],
+        ).fetchone()[0]
+        > 0
+    )
+
+
+def backfill(
+    con,
+    *,
+    settings,
+    start: date = EARLIEST_AUCTION,
+    now: datetime | None = None,
+    transport: httpx.BaseTransport | None = None,
+    progress: Callable[[date, date, bool, int, int], None] | None = None,
+) -> BackfillResult:
+    """Fetch and store the auction history month by month from `start` to today (New York).
+
+    `progress(lo, hi, fetched, records, rows)` is called after each window. A failing request
+    raises `TreasuryDirectError` (or `HttpError`); windows stored before it stay stored.
+    """
+    now = now or _now()
+    ctx = jobs.JobContext(
+        job=JOB,
+        con=con,
+        settings=settings,
+        today=now.astimezone(jobs.ET).date(),
+        now=now,
+        trigger="manual",
+        run_id=None,
+        watermarks=jobs.get_watermarks(con, JOB.name),
+        transport=transport,
+    )
+    windows = month_windows(start, ctx.today)
+    fetched = rows = records = 0
+    try:
+        for lo, hi in windows:
+            url = search_url(lo, hi)
+            if hi < ctx.today and _fetched(con, url):
+                if progress:
+                    progress(lo, hi, False, 0, 0)
+                continue
+            raw_id = _get(ctx, url, "td_search")
+            fetched += 1
+            con.execute("BEGIN TRANSACTION")
+            try:
+                found = _records(ctx, raw_id)
+                n = _store(ctx, "results", found)
+                proposed = ctx._proposed.pop("results", None)
+                if proposed is not None:
+                    ctx.watermarks["results"] = jobs.set_watermark(
+                        con, JOB.name, "results", proposed, today=ctx.today
+                    )
+                con.execute("COMMIT")
+            except BaseException:
+                con.execute("ROLLBACK")
+                raise
+            rows += n
+            records += len(found)
+            if progress:
+                progress(lo, hi, True, len(found), n)
+    finally:
+        ctx.close()
+    return BackfillResult(len(windows), fetched, len(windows) - fetched, rows, records)

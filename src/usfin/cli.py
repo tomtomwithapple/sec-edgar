@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -11,7 +12,7 @@ import uvicorn
 from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
-from usfin.sources import fiscal
+from usfin.sources import fiscal, treasurydirect
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -306,6 +307,52 @@ def fd_probe(
     for col, fd_type in types.items():
         sample = rows[-1].get(col) if rows else None
         typer.echo(f"{col}\t{fd_type}\t{fiscal.sql_type(fd_type)}\t{sample!r}")
+
+
+td_app = typer.Typer(no_args_is_help=True, help="TreasuryDirect.")
+app.add_typer(td_app, name="td")
+
+
+@td_app.command("backfill")
+def td_backfill(
+    start: str = typer.Option(
+        treasurydirect.EARLIEST_AUCTION.isoformat(),
+        "--from",
+        help="First auction date (YYYY-MM-DD); default the earliest one upstream has.",
+    ),
+) -> None:
+    """Load the auction history: one `search` per month from --from to today (resumable)."""
+    try:
+        first = date.fromisoformat(start)
+    except ValueError:
+        raise typer.BadParameter(f"{start!r} is not a YYYY-MM-DD date", param_hint="--from") from None
+    settings = load_settings()
+    years: dict[int, list[int]] = {}
+
+    def progress(lo: date, hi: date, fetched: bool, records: int, rows: int) -> None:
+        year = years.setdefault(lo.year, [0, 0, 0, 0])
+        year[0 if fetched else 1] += 1
+        year[2] += records
+        year[3] += rows
+        if hi.month == 12 or hi == today:
+            f, s, rec, r = year
+            typer.echo(f"{lo.year}: fetched {f}, skipped {s}, records {rec}, rows {r}")
+
+    now = treasurydirect._now()
+    today = now.astimezone(jobs.ET).date()
+    started = time.monotonic()
+    with _db_session(apply_migrations=True) as con:
+        try:
+            result = treasurydirect.backfill(
+                con, settings=settings, start=first, now=now, progress=progress
+            )
+        except (usfin_http.HttpError, treasurydirect.TreasuryDirectError) as exc:
+            typer.echo(f"error: {exc} (rerun to resume)", err=True)
+            raise typer.Exit(1) from None
+    typer.echo(
+        f"windows {result.windows} (fetched {result.fetched}, skipped {result.skipped}),"
+        f" records {result.records}, rows {result.rows} in {time.monotonic() - started:.1f} s"
+    )
 
 
 alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")
