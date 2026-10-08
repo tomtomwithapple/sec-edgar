@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S1 done — next: S2
+Status: S2 done — next: S3
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -268,10 +268,13 @@ recorded in `schema_version`. Each slice that adds tables adds a migration; none
 **Raw store (C1, C17).** Body is gzipped to `raw/<source>/<sha[:2]>/<sha>.gz` (sha of the
 uncompressed body); identical bodies share one blob, every fetch gets its own `raw_response`
 row. Bodies larger than 64 MB (EDGAR bulk ZIPs) are streamed to disk while hashing, stored
-uncompressed as `<sha>.zip`, never held in memory. `raw.open(raw_id)` returns a readable stream.
-`usfin raw prune [--keep 2] [--dry-run]` deletes bulk blobs (datasets `bulk_submissions`,
-`bulk_companyfacts`) older than the newest N per dataset and sets `pruned_at`; nothing else is
-ever pruned (decision B). Reparse skips pruned rows with a warning.
+uncompressed as `<sha>.zip`, never held in memory. `raw.open(con, raw_id)` returns a readable
+stream (amended in S2: it takes the session, like every store call; a pruned row raises
+`RawPruned`). `usfin raw prune [--keep 2] [--dry-run]` deletes bulk blobs (datasets
+`bulk_submissions`, `bulk_companyfacts`) older than the newest N per dataset and sets `pruned_at`;
+blobs are ranked by their latest fetch, so an unchanged ZIP downloaded twice counts as one blob
+(clarified in S2). Nothing else is ever pruned (decision B). Reparse skips pruned rows with a
+warning.
 
 **HTTP (C5).** `usfin.http.Client.get/post(url, source=, dataset=, …)`: looks up the host in
 `config/hosts.yaml` for rate and headers (`www.sec.gov` and `data.sec.gov` share one 8 rps
@@ -820,7 +823,7 @@ Done when: C18 covered; every job has at least one ok live run.
 |-------|--------|------|--------|-------|------------|
 | S0 Scaffold | done | 2026-10-08 | 70b5a87 | 10 new (test_cli 2, test_settings 8); suite 10 passed | `uv sync` resolved 43 packages on CPython 3.13.14; `usfin version` printed `0.1.0`; uv.lock pins all 14 Tech stack versions exactly (deps pinned with `==` in pyproject); `uv build` made sdist + wheel. Real env wins over `.env`; `.env` is read without mutating `os.environ`; bad `USFIN_LOCK_WAIT` → `ConfigError`. No plan change. |
 | S1 Store, migrations, lock wait | done | 2026-10-08 | 352a7c4 | 12 new (test_store); suite 22 passed | `db migrate` on a fresh `data/usfin.duckdb` printed `applied 001_core`, re-run `schema up to date`; `db info` printed path, `version: 1`, tables `alert, job_run, raw_response, schema_version, watermark`. With a second python process holding the real file, `USFIN_LOCK_WAIT=1 usfin db info` exited 1 after ~1 s with `database busy — …` (DuckDB `IOException` "Could not set lock on file … Conflicting lock is held in … (PID n)"); after release it opened clean. Each migration runs in its own transaction (a broken one rolls back fully). Plan amended (Core tables): `job_run.status` gains `running`; ids from sequences. |
-| S2 Raw store | todo | | | | |
+| S2 Raw store | done | 2026-10-08 | | 14 new (test_raw); suite 36 passed | `usfin raw prune --dry-run` on the real (empty) store printed `dry run: 0 candidates, 0 blobs, 0 bytes`, exit 0; `db info` unchanged (version 1). Every body (bytes, stream or chunk iterable) is spooled to a temp file in `CHUNK_SIZE` reads while hashing, then gzipped or renamed to `.zip` — never read whole, no temp left behind. Prune ranks distinct blobs per dataset by latest fetch (an unchanged ZIP fetched twice is one blob), marks rows in one transaction, deletes blobs only no unpruned row still uses. Plan amended (Raw store): `raw.open(con, raw_id)` takes the session; blob-vs-row ranking stated. |
 | S3 Rate limiter and HTTP client | todo | | | | |
 | S4 Calendars | todo | | | | |
 | S5 Job runner, run log, watermarks | todo | | | | |

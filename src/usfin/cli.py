@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import duckdb
 import typer
 
-from usfin import __version__, store
+from usfin import __version__, raw, store
 from usfin.settings import load_settings
 
 app = typer.Typer(no_args_is_help=True)
@@ -26,12 +26,12 @@ app.add_typer(db_app, name="db")
 
 
 @contextmanager
-def _db_session() -> Iterator[duckdb.DuckDBPyConnection]:
+def _db_session(*, apply_migrations: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
     """Session for CLI commands: a held lock exits 1 with one line instead of a traceback."""
     settings = load_settings()
     try:
         with store.session(
-            settings.db_path, wait=settings.lock_wait, apply_migrations=False
+            settings.db_path, wait=settings.lock_wait, apply_migrations=apply_migrations
         ) as con:
             yield con
     except store.DatabaseLocked as exc:
@@ -61,3 +61,25 @@ def db_info() -> None:
     typer.echo(f"path: {load_settings().db_path.resolve()}")
     typer.echo(f"version: {version}")
     typer.echo(f"tables: {', '.join(tables)}")
+
+
+raw_app = typer.Typer(no_args_is_help=True, help="Raw store: stored response bodies.")
+app.add_typer(raw_app, name="raw")
+
+
+@raw_app.command("prune")
+def raw_prune(
+    keep: int = typer.Option(2, min=0, help="Blobs to keep per bulk dataset."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List candidates, change nothing."),
+) -> None:
+    """Delete bulk blobs older than the newest KEEP per bulk dataset; mark their rows pruned."""
+    with _db_session(apply_migrations=True) as con:
+        candidates = raw.prune(con, keep=keep, dry_run=dry_run)
+    blobs = {c.blob_path for c in candidates}
+    size = sum({c.blob_path: c.bytes for c in candidates}.values())
+    for c in candidates:
+        typer.echo(f"{c.raw_id}\t{c.dataset}\t{c.fetched_at:%Y-%m-%d %H:%M}\t{c.blob_path}")
+    if dry_run:
+        typer.echo(f"dry run: {len(candidates)} candidates, {len(blobs)} blobs, {size} bytes")
+    else:
+        typer.echo(f"pruned {len(candidates)} rows, {len(blobs)} blobs, {size} bytes")
