@@ -31,7 +31,7 @@ import respx
 
 from usfin import calendars, demo, http, jobs, ratelimit, raw, scheduler, store
 from usfin.settings import load_settings
-from usfin.sources.edgar import companyfacts, feed, filings, form4, submissions
+from usfin.sources.edgar import companyfacts, feed, filings, form4, sched13, submissions
 
 FIXTURES = Path(__file__).parent / "fixtures" / "edgar"
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config"
@@ -464,12 +464,13 @@ def test_the_chain_drains_submissions_and_companyfacts_once_per_cik(settings, fa
         ],
     )
     fake.requests.clear()
-    result = _run(settings, clock, chain=True, registry=_registry(form4.JOB))
+    result = _run(settings, clock, chain=True, registry=_registry(form4.JOB, sched13.JOB))
     assert result.status == "ok", result.error
     assert [(c.job, c.status) for c in result.chained] == [
         ("edgar_submissions", "ok"), ("edgar_companyfacts", "ok"), ("edgar_form4", "ok"),
+        ("edgar_sched13", "ok"),
     ]  # fmt: skip
-    # no form4 queued here: tests/test_form4.py drains that kind
+    # no form4 / sched13 queued here: tests/test_form4.py and test_sched13.py drain those kinds
     facts = [r for r in fake.requests if r.startswith("facts:")]
     assert facts == ["facts:CIK0000320193.json"]  # three queued rows, one request
     subs = [r for r in fake.requests if r.startswith("subs:")]

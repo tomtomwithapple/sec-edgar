@@ -14,3 +14,9 @@ watchlist:
 # 3.5 min. The rest wait for the next run.
 form4:
   max_docs_per_run: 300
+
+# Schedule 13D/G documents (job edgar_sched13, chained after edgar_feed and edgar_reconcile).
+# Each queued structured filing costs 2 requests (folder index.json + primary_doc.xml), a legacy
+# SC 13D/13G one (no XML; skipped and counted) 1; a run drains at most this many, oldest first.
+sched13:
+  max_docs_per_run: 300

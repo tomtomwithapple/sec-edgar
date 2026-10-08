@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?><edgarSubmission xmlns="http://www.sec.gov/edgar/schedule13g" xmlns:com="http://www.sec.gov/edgar/common">
+  <schemaVersion>X0202</schemaVersion>
+<headerData>
+    <submissionType>SCHEDULE 13G</submissionType>
+    <filerInfo>
+      <filer>
+        <filerCredentials>
+          <!-- Field: Pseudo-Tag; ID: Name; Data: Coastlands Capital LP -->
+          <cik>0002068530</cik>
+          <ccc>XXXXXXXX</ccc>
+        </filerCredentials>
+      </filer>
+      <liveTestFlag>LIVE</liveTestFlag>
+
+
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPageHeader>
+      <securitiesClassTitle>Class A Common Stock, par value $0.0001 per share</securitiesClassTitle>
+      <eventDateRequiresFilingThisStatement>10/01/2026</eventDateRequiresFilingThisStatement>
+      <issuerInfo>
+        <issuerCik>0001637715</issuerCik>
+        <issuerName>OnKure Therapeutics, Inc.</issuerName>
+        <issuerCusips>
+          <issuerCusipNumber>68277Q105</issuerCusipNumber>
+        </issuerCusips>
+        <issuerPrincipalExecutiveOfficeAddress>
+          <com:street1>6707 Winchester Circle</com:street1>
+          <com:street2>#400</com:street2>
+          <com:city>Boulder</com:city>
+          <com:stateOrCountry>CO</com:stateOrCountry>
+          <com:zipCode>80301</com:zipCode>
+        </issuerPrincipalExecutiveOfficeAddress>
+      </issuerInfo>
+      <designateRulesPursuantThisScheduleFiled>
+        <designateRulePursuantThisScheduleFiled>Rule 13d-1(b)</designateRulePursuantThisScheduleFiled>
+        <designateRulePursuantThisScheduleFiled>Rule 13d-1(c)</designateRulePursuantThisScheduleFiled>
+      </designateRulesPursuantThisScheduleFiled>
+    </coverPageHeader>
+    <coverPageHeaderReportingPersonDetails>
+
+
+      <reportingPersonName>Coastlands Capital LP</reportingPersonName>
+      <memberGroup>b</memberGroup>
+      <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+      <reportingPersonBeneficiallyOwnedNumberOfShares>
+        <soleVotingPower>0.00</soleVotingPower>
+        <sharedVotingPower>2700000.00</sharedVotingPower>
+        <soleDispositivePower>0.00</soleDispositivePower>
+        <sharedDispositivePower>2700000.00</sharedDispositivePower>
+      </reportingPersonBeneficiallyOwnedNumberOfShares>
+      <reportingPersonBeneficiallyOwnedAggregateNumberOfShares>2700000.00</reportingPersonBeneficiallyOwnedAggregateNumberOfShares>
+      <aggregateAmountExcludesCertainSharesFlag>N</aggregateAmountExcludesCertainSharesFlag>
+      <classPercent>6.67</classPercent>
+      <typeOfReportingPerson>IA</typeOfReportingPerson>
+      <typeOfReportingPerson>PN</typeOfReportingPerson>
+      <comments>Consists of 2,700,000 shares of Class A Common Stock held directly by Coastlands Capital Partners LP. The calculation of the beneficial ownership of the Reporting Persons is based on 40,496,309 shares outstanding as of August 3, 2026, as disclosed in the Quarterly Report on Form 10-Q filed by the Issuer on August 4, 2026. Excludes pre-funded warrants held by the Reporting Persons in excess of a beneficial ownership limitation of 4.99%.</comments>
+    </coverPageHeaderReportingPersonDetails>
+    <coverPageHeaderReportingPersonDetails>
+
+      <reportingPersonName>Coastlands Capital Partners LP</reportingPersonName>
+      <memberGroup>b</memberGroup>
+      <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+      <reportingPersonBeneficiallyOwnedNumberOfShares>
+        <soleVotingPower>0.00</soleVotingPower>
+        <sharedVotingPower>2700000.00</sharedVotingPower>
+        <soleDispositivePower>0.00</soleDispositivePower>
+        <sharedDispositivePower>2700000.00</sharedDispositivePower>
+      </reportingPersonBeneficiallyOwnedNumberOfShares>
+      <reportingPersonBeneficiallyOwnedAggregateNumberOfShares>2700000.00</reportingPersonBeneficiallyOwnedAggregateNumberOfShares>
+      <aggregateAmountExcludesCertainSharesFlag>N</aggregateAmountExcludesCertainSharesFlag>
+      <classPercent>6.67</classPercent>
+      <typeOfReportingPerson>PN</typeOfReportingPerson>
+      <comments>Consists of 2,700,000 shares of Class A Common Stock held directly by Coastlands Capital Partners LP. The calculation of the beneficial ownership of the Reporting Persons is based on 40,496,309 shares outstanding as of August 3, 2026, as disclosed in the Quarterly Report on Form 10-Q filed by the Issuer on August 4, 2026. Excludes pre-funded warrants held by the Reporting Persons in excess of a beneficial ownership limitation of 4.99%.</comments>
+    </coverPageHeaderReportingPersonDetails>
+    <coverPageHeaderReportingPersonDetails>
+
+      <reportingPersonName>Coastlands Capital GP LLC</reportingPersonName>
+      <memberGroup>b</memberGroup>
+      <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+      <reportingPersonBeneficiallyOwnedNumberOfShares>
+        <soleVotingPower>0.00</soleVotingPower>
+        <sharedVotingPower>2700000.00</sharedVotingPower>
+        <soleDispositivePower>0.00</soleDispositivePower>
+        <sharedDispositivePower>2700000.00</sharedDispositivePower>
+      </reportingPersonBeneficiallyOwnedNumberOfShares>
+      <reportingPersonBeneficiallyOwnedAggregateNumberOfShares>2700000.00</reportingPersonBeneficiallyOwnedAggregateNumberOfShares>
+      <aggregateAmountExcludesCertainSharesFlag>N</aggregateAmountExcludesCertainSharesFlag>
+      <classPercent>6.67</classPercent>
+      <typeOfReportingPerson>OO</typeOfReportingPerson>
+      <comments>Consists of 2,700,000 shares of Class A Common Stock held directly by Coastlands Capital Partners LP. The calculation of the beneficial ownership of the Reporting Persons is based on 40,496,309 shares outstanding as of August 3, 2026, as disclosed in the Quarterly Report on Form 10-Q filed by the Issuer on August 4, 2026. Excludes pre-funded warrants held by the Reporting Persons in excess of a beneficial ownership limitation of 4.99%.</comments>
+    </coverPageHeaderReportingPersonDetails>
+    <coverPageHeaderReportingPersonDetails>
+
+      <reportingPersonName>Coastlands Capital LLC</reportingPersonName>
+      <memberGroup>b</memberGroup>
+      <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+      <reportingPersonBeneficiallyOwnedNumberOfShares>
+        <soleVotingPower>0.00</soleVotingPower>
+        <sharedVotingPower>2700000.00</sharedVotingPower>
+        <soleDispositivePower>0.00</soleDispositivePower>
+        <sharedDispositivePower>2700000.00</sharedDispositivePower>
+      </reportingPersonBeneficiallyOwnedNumberOfShares>
+      <reportingPersonBeneficiallyOwnedAggregateNumberOfShares>2700000.00</reportingPersonBeneficiallyOwnedAggregateNumberOfShares>
+      <aggregateAmountExcludesCertainSharesFlag>N</aggregateAmountExcludesCertainSharesFlag>
+      <classPercent>6.67</classPercent>
+      <typeOfReportingPerson>HC</typeOfReportingPerson>
+      <typeOfReportingPerson>OO</typeOfReportingPerson>
+      <comments>Consists of 2,700,000 shares of Class A Common Stock held directly by Coastlands Capital Partners LP. The calculation of the beneficial ownership of the Reporting Persons is based on 40,496,309 shares outstanding as of August 3, 2026, as disclosed in the Quarterly Report on Form 10-Q filed by the Issuer on August 4, 2026. Excludes pre-funded warrants held by the Reporting Persons in excess of a beneficial ownership limitation of 4.99%.</comments>
+    </coverPageHeaderReportingPersonDetails>
+    <coverPageHeaderReportingPersonDetails>
+
+      <reportingPersonName>Matthew D. Perry</reportingPersonName>
+      <memberGroup>b</memberGroup>
+      <citizenshipOrOrganization>X1</citizenshipOrOrganization>
+      <reportingPersonBeneficiallyOwnedNumberOfShares>
+        <soleVotingPower>0.00</soleVotingPower>
+        <sharedVotingPower>2700000.00</sharedVotingPower>
+        <soleDispositivePower>0.00</soleDispositivePower>
+        <sharedDispositivePower>2700000.00</sharedDispositivePower>
+      </reportingPersonBeneficiallyOwnedNumberOfShares>
+      <reportingPersonBeneficiallyOwnedAggregateNumberOfShares>2700000.00</reportingPersonBeneficiallyOwnedAggregateNumberOfShares>
+      <aggregateAmountExcludesCertainSharesFlag>N</aggregateAmountExcludesCertainSharesFlag>
+      <classPercent>6.67</classPercent>
+      <typeOfReportingPerson>HC</typeOfReportingPerson>
+      <typeOfReportingPerson>IN</typeOfReportingPerson>
+      <comments>Consists of 2,700,000 shares of Class A Common Stock held directly by Coastlands Capital Partners LP. The calculation of the beneficial ownership of the Reporting Persons is based on 40,496,309 shares outstanding as of August 3, 2026, as disclosed in the Quarterly Report on Form 10-Q filed by the Issuer on August 4, 2026. Excludes pre-funded warrants held by the Reporting Persons in excess of a beneficial ownership limitation of 4.99%.</comments>
+    </coverPageHeaderReportingPersonDetails>
+    <items>
+      <item1>
+        <issuerName>OnKure Therapeutics, Inc.</issuerName>
+        <issuerPrincipalExecutiveOfficeAddress>6707 Winchester Circle #400 Boulder, CO, 80301</issuerPrincipalExecutiveOfficeAddress>
+      </item1>
+      <item2>
+        <filingPersonName>Coastlands Capital LP, a Delaware limited partnership ("Coastlands")
+Coastlands Capital Partners LP, a Delaware limited partnership (the "Partnership")
+Coastlands Capital GP LLC, a Delaware limited liability company (the "General Partner")
+Coastlands Capital LLC, a Delaware limited liability company ("Coastlands GP")
+Matthew D. Perry
+
+Coastlands and the General Partner are the investment adviser and general partner, respectively, of the Partnership. Coastlands GP is the general partner of Coastlands. Mr. Perry is the control person of Coastlands, the Partnership, Coastlands GP and the General Partner. The reporting persons are filing this Schedule 13G jointly, but not as members of a group, and each disclaims membership in a group. Each reporting person also disclaims beneficial ownership of Class A Common Stock except to the extent of that person's pecuniary interest therein. In addition, the filing of this Schedule 13G on behalf of the Partnership should not be construed as an admission that it is, and it disclaims that it is, a beneficial owner, as defined in Rule 13d-3 under the Act, of any Class A Common Stock covered by this Schedule 13G.</filingPersonName>
+        <principalBusinessOfficeOrResidenceAddress>601 California Street, Suite 1210, San Francisco, CA 94108</principalBusinessOfficeOrResidenceAddress>
+        <citizenship>See Item 4 of the cover sheet for each reporting person.</citizenship>
+      </item2>
+      <item3>
+        <notApplicableFlag>N</notApplicableFlag>
+        <typeOfPersonFiling>IA</typeOfPersonFiling>
+        <typeOfPersonFiling>HC</typeOfPersonFiling>
+      </item3>
+      <item4>
+        <amountBeneficiallyOwned>Coastlands: 2,700,000
+Partnership: 2,700,000
+General Partner: 2,700,000
+Coastlands GP: 2,700,000
+Matthew D. Perry: 2,700,000</amountBeneficiallyOwned>
+        <classPercent>Coastlands: 6.67%
+Partnership: 6.67%
+General Partner: 6.67%
+Coastlands GP: 6.67%
+Matthew D. Perry: 6.67%</classPercent>
+        <numberOfSharesPersonHas>
+          <solePowerOrDirectToVote>Coastlands: 0
+Partnership: 0
+General Partner: 0
+Coastlands GP: 0
+Matthew D. Perry: 0</solePowerOrDirectToVote>
+          <sharedPowerOrDirectToVote>Coastlands: 2,700,000
+Partnership: 2,700,000
+General Partner: 2,700,000
+Coastlands GP: 2,700,000
+Matthew D. Perry: 2,700,000</sharedPowerOrDirectToVote>
+          <solePowerOrDirectToDispose>Coastlands: 0
+Partnership: 0
+General Partner: 0
+Coastlands GP: 0
+Matthew D. Perry: 0</solePowerOrDirectToDispose>
+          <sharedPowerOrDirectToDispose>Coastlands: 2,700,000
+Partnership: 2,700,000
+General Partner: 2,700,000
+Coastlands GP: 2,700,000
+Matthew D. Perry: 2,700,000</sharedPowerOrDirectToDispose>
+        </numberOfSharesPersonHas>
+      </item4>
+      <item5>
+        <notApplicableFlag>Y</notApplicableFlag>
+      </item5>
+      <item6>
+        <notApplicableFlag>N</notApplicableFlag>
+        <ownershipMoreThan5PercentOnBehalfOfAnotherPerson>The Partnership holds the shares of Class A Common Stock, including shares of Class A Common Stock issuable upon exercise of pre-funded warrants, for the benefit of its investors and has the right to receive or the power to direct the receipt of dividends from, or the proceeds from the sale of, shares of Class A Common Stock, including shares of Class A Common Stock issuable upon exercise of pre-funded warrants.</ownershipMoreThan5PercentOnBehalfOfAnotherPerson>
+      </item6>
+      <item7>
+        <notApplicableFlag>Y</notApplicableFlag>
+      </item7>
+      <item8>
+        <notApplicableFlag>Y</notApplicableFlag>
+      </item8>
+      <item9>
+        <notApplicableFlag>Y</notApplicableFlag>
+      </item9>
+      <item10>
+        <notApplicableFlag>N</notApplicableFlag>
+        <certifications>By signing below I certify that, to the best of my knowledge and belief, the securities referred to above were acquired and are held in the ordinary course of business and were not acquired and are not held for the purpose of or with the effect of changing or influencing the control of the issuer of the securities and were not acquired and are not held in connection with or as a participant in any transaction having that purpose or effect, other than activities solely in connection with a nomination under § 240.14a-11.
+
+By signing below I certify that, to the best of my knowledge and belief, the securities referred to above were not acquired and are not held for the purpose of or with the effect of changing or influencing the control of the issuer of the securities and were not acquired and are not held in connection with or as a participant in any transaction having that purpose or effect, other than activities solely in connection with a nomination under § 240.14a-11.</certifications>
+      </item10>
+    </items>
+    <exhibitInfo>Exhibit 99.1 - Agreement Regarding Joint Filing of Statement on Schedule 13D or 13G</exhibitInfo>
+    <signatureInformation>
+      <reportingPersonName>Coastlands Capital LP</reportingPersonName>
+      <signatureDetails>
+        <signature>/s/ Mark Shamia</signature>
+        <title>Chief Operating Officer of the General Partner, Coastlands Capital LLC</title>
+        <date>10/07/2026</date>
+      </signatureDetails>
+    </signatureInformation>
+    <signatureInformation>
+      <reportingPersonName>Coastlands Capital Partners LP</reportingPersonName>
+      <signatureDetails>
+        <signature>/s/ Mark Shamia</signature>
+        <title>Chief Operating Officer of the General Partner, Coastlands Capital GP LLC</title>
+        <date>10/07/2026</date>
+      </signatureDetails>
+    </signatureInformation>
+    <signatureInformation>
+      <reportingPersonName>Coastlands Capital GP LLC</reportingPersonName>
+      <signatureDetails>
+        <signature>/s/ Mark Shamia</signature>
+        <title>Chief Operating Officer</title>
+        <date>10/07/2026</date>
+      </signatureDetails>
+    </signatureInformation>
+    <signatureInformation>
+      <reportingPersonName>Coastlands Capital LLC</reportingPersonName>
+      <signatureDetails>
+        <signature>/s/ Mark Shamia</signature>
+        <title>Chief Operating Officer</title>
+        <date>10/07/2026</date>
+      </signatureDetails>
+    </signatureInformation>
+    <signatureInformation>
+      <reportingPersonName>Matthew D. Perry</reportingPersonName>
+      <signatureDetails>
+        <signature>/s/ Matthew D. Perry</signature>
+        <title>Reporting Person</title>
+        <date>10/07/2026</date>
+      </signatureDetails>
+    </signatureInformation>
+  </formData>
+
+</edgarSubmission>

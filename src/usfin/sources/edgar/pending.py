@@ -10,22 +10,27 @@ after a key succeeded, mark its rows done when the fetched document carries the 
 minutes after acceptance, and not every 8-K or amendment carries XBRL facts). An open row keeps
 its CIK in the next drain.
 
-`form4` (S24) is drained per accession, not per CIK: `open_accessions` lists the oldest open rows
-up to a per-run cap and `close` marks one done once its ownership document is stored
-(`insider_filing` has the accession). There is no give-up: an accepted Form 4 always has its
-document, so a row that keeps failing stays open and visible in the run log.
+`form4` (S24) and `sched13` (S25) are drained per accession, not per CIK: `open_accessions` lists
+the oldest open rows up to a per-run cap (`max_docs`: `<kind>: max_docs_per_run` in
+`config/edgar.yaml`) and `close` marks one done once its document is stored (`insider_filing` /
+`ownership_filing` has the accession). There is no give-up: an accepted filing always has its
+folder, so a row that keeps failing stays open and visible in the run log.
 """
 
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import duckdb
+import yaml
 
 from usfin import store
+from usfin.settings import ConfigError
 
 TABLE = "pending_doc"
 KINDS = ("submissions", "companyfacts", "form4", "sched13")
 GIVE_UP = timedelta(days=1)
+MAX_DOCS_DEFAULT = 300
 
 FOUND = {
     "submissions": (
@@ -36,6 +41,9 @@ FOUND = {
         "EXISTS (SELECT 1 FROM xbrl_fact x WHERE x.cik = p.cik AND x.accn = p.accession_no)"
     ),
     "form4": ("EXISTS (SELECT 1 FROM insider_filing x WHERE x.accession_no = p.accession_no)"),
+    "sched13": (
+        "EXISTS (SELECT 1 FROM ownership_filing x WHERE x.accession_no = p.accession_no)"
+    ),
 }
 """SQL over `pending_doc p`: the fetched document carries this queued accession."""
 
@@ -105,3 +113,18 @@ def close(con: duckdb.DuckDBPyConnection, kind: str, accession_no: str, *, now: 
         f" AND p.done_at IS NULL AND {FOUND[kind]}",
         [now, kind, accession_no],
     ).fetchone()[0]
+
+
+def max_docs(config_dir: Path | str, kind: str) -> int:
+    """`<kind>: max_docs_per_run` in `<config_dir>/edgar.yaml` (default `MAX_DOCS_DEFAULT`)."""
+    path = Path(config_dir) / "edgar.yaml"
+    data = (yaml.safe_load(path.read_text("utf-8")) if path.is_file() else None) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: expected a mapping")
+    section = data.get(kind) or {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path}: {kind} must be a mapping")
+    value = section.get("max_docs_per_run", MAX_DOCS_DEFAULT)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{path}: {kind}.max_docs_per_run {value!r} is not a count >= 0")
+    return value

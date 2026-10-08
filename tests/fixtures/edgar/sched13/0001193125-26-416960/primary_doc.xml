@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?><edgarSubmission xmlns="http://www.sec.gov/edgar/schedule13D" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <schemaVersion>X0202</schemaVersion>
+<headerData>
+    <submissionType>SCHEDULE 13D/A</submissionType>
+    <filerInfo>
+      <filer>
+        <filerCredentials>
+          <cik>0001548007</cik>
+          <ccc>XXXXXXXX</ccc>
+        </filerCredentials>
+      </filer>
+      <liveTestFlag>LIVE</liveTestFlag>
+
+
+
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPageHeader>
+      <amendmentNo>7</amendmentNo>
+      <securitiesClassTitle>Common Stock, par value $1.00 per share</securitiesClassTitle>
+      <dateOfEvent>10/05/2026</dateOfEvent>
+      <previouslyFiledFlag>false</previouslyFiledFlag>
+      <issuerInfo>
+        <issuerCIK>0000879635</issuerCIK>
+        <issuerCusips>
+          <issuerCusipNumber>59540G107</issuerCusipNumber>
+        </issuerCusips>
+        <issuerName>Mid Penn Bancorp, Inc.</issuerName>
+        <address>
+          <street1 xmlns="http://www.sec.gov/edgar/common">2407 Park Drive</street1>
+          <city xmlns="http://www.sec.gov/edgar/common">Harrisburg</city>
+          <stateOrCountry xmlns="http://www.sec.gov/edgar/common">PA</stateOrCountry>
+          <zipCode xmlns="http://www.sec.gov/edgar/common">17110</zipCode>
+        </address>
+      </issuerInfo>
+      <authorizedPersons>
+        <notificationInfo>
+          <personName>Philip A. Norcross</personName>
+          <personPhoneNum>561-515-4275</personPhoneNum>
+          <personAddress>
+            <street1 xmlns="http://www.sec.gov/edgar/common">P.O. Box 3189</street1>
+            <city xmlns="http://www.sec.gov/edgar/common">Palm Beach</city>
+            <stateOrCountry xmlns="http://www.sec.gov/edgar/common">FL</stateOrCountry>
+            <zipCode xmlns="http://www.sec.gov/edgar/common">33480</zipCode>
+          </personAddress>
+        </notificationInfo>
+        <notificationInfo>
+          <personName>H. Rodgin Cohen</personName>
+          <personPhoneNum>212-558-4000</personPhoneNum>
+          <personAddress>
+            <street1 xmlns="http://www.sec.gov/edgar/common">Sullivan &amp; Cromwell LLP</street1>
+            <street2 xmlns="http://www.sec.gov/edgar/common">125 Broad Street</street2>
+            <city xmlns="http://www.sec.gov/edgar/common">New York</city>
+            <stateOrCountry xmlns="http://www.sec.gov/edgar/common">NY</stateOrCountry>
+            <zipCode xmlns="http://www.sec.gov/edgar/common">10004</zipCode>
+          </personAddress>
+        </notificationInfo>
+      </authorizedPersons>
+    </coverPageHeader>
+    <reportingPersons>
+      <reportingPersonInfo>
+        <reportingPersonNoCIK>Y</reportingPersonNoCIK>
+        <reportingPersonName>GAH Capital, LLC</reportingPersonName>
+        <memberOfGroup>a</memberOfGroup>
+        <fundType>WC</fundType>
+        <legalProceedings>N</legalProceedings>
+        <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>2436379</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>2436379</sharedDispositivePower>
+        <aggregateAmountOwned>2436379</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.62</percentOfClass>
+        <typeOfReportingPerson>OO</typeOfReportingPerson>
+        <commentContent>Rows 8, 10, 11 Footnote: 2,436,379 shares of Common Stock held by GAH Capital, LLC, a wholly owned subsidiary of the GAH Capital Trust. Philip A. Norcross serves as Manager of GAH Capital, LLC and also serves as a Trustee of the GAH Capital Trust. Mr. Norcross has been delegated investment authority over the trust assets from the other Trustees of the GAH Capital Trust. As such, Mr. Norcross may be deemed to have shared beneficial ownership over the Common Shares.
+Row 11 Footnote: The Reporting Person is reporting on this Schedule 13D as a member of a "group" with the other Reporting Persons. The group beneficially owns 2,451,458 shares of Common Stock owned by all of the Reporting Persons in the aggregate, representing approximately 9.68% of the outstanding shares of Common Stock. See Item 5.
+Row 13 Footnote: For purposes of calculating beneficial ownership percentages in this statement on Schedule 13D, the total number of shares of Common Stock outstanding as of July 31, 2026 is 25,335,215, as reported by the Issuer in its Quarterly Report on Form 10-Q, filed with the SEC on August 6, 2026.</commentContent>
+      </reportingPersonInfo>
+      <reportingPersonInfo>
+        <reportingPersonNoCIK>Y</reportingPersonNoCIK>
+        <reportingPersonName>GAH Capital Trust</reportingPersonName>
+        <memberOfGroup>a</memberOfGroup>
+        <fundType>OO</fundType>
+        <legalProceedings>N</legalProceedings>
+        <citizenshipOrOrganization>FL</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>2436379</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>2436379</sharedDispositivePower>
+        <aggregateAmountOwned>2436379</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.62</percentOfClass>
+        <typeOfReportingPerson>OO</typeOfReportingPerson>
+        <commentContent>Row 4 Footnote: See Item 3.
+Rows 8, 10, 11 Footnote: 2,436,379 shares of Common Stock held by GAH Capital, LLC, a wholly owned subsidiary of the GAH Capital Trust. Philip A. Norcross serves as Manager of GAH Capital, LLC and also serves as a Trustee of the GAH Capital Trust. Mr. Norcross has been delegated investment authority over the trust assets from the other Trustees of the GAH Capital Trust. As such, Mr. Norcross may be deemed to have shared beneficial ownership over the Common Shares.
+Row 11 Footnote: The Reporting Person is reporting on this Schedule 13D as a member of a "group" with the other Reporting Persons. The group beneficially owns 2,451,458 shares of Common Stock owned by all of the Reporting Persons in the aggregate, representing approximately 9.68% of the outstanding shares of Common Stock. See Item 5.
+Row 13 Footnote: For purposes of calculating beneficial ownership percentages in this statement on Schedule 13D, the total number of shares of Common Stock outstanding as of July 31, 2026 is 25,335,215, as reported by the Issuer in its Quarterly Report on Form 10-Q, filed with the SEC on August 6, 2026.</commentContent>
+      </reportingPersonInfo>
+      <reportingPersonInfo>
+        <reportingPersonCIK>0001548007</reportingPersonCIK>
+        <reportingPersonNoCIK>N</reportingPersonNoCIK>
+        <reportingPersonName>Philip A. Norcross, individually and in his capacity as Manager and Trustee</reportingPersonName>
+        <memberOfGroup>a</memberOfGroup>
+        <fundType>OO</fundType>
+        <legalProceedings>N</legalProceedings>
+        <citizenshipOrOrganization>X1</citizenshipOrOrganization>
+        <soleVotingPower>15079</soleVotingPower>
+        <sharedVotingPower>2436379</sharedVotingPower>
+        <soleDispositivePower>15079</soleDispositivePower>
+        <sharedDispositivePower>2436379</sharedDispositivePower>
+        <aggregateAmountOwned>2451458</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.68</percentOfClass>
+        <typeOfReportingPerson>IN</typeOfReportingPerson>
+        <commentContent>Row 4 Footnote: See Item 3.
+Rows 8, 10, 11 Footnote: 2,436,379 shares of Common Stock held by GAH Capital, LLC, a wholly owned subsidiary of the GAH Capital Trust. Philip A. Norcross serves as Manager of GAH Capital, LLC and also serves as a Trustee of the GAH Capital Trust. Mr. Norcross has been delegated investment authority over the trust assets from the other Trustees of the GAH Capital Trust. As such, Mr. Norcross may be deemed to have shared beneficial ownership over the Common Shares.
+Row 11 Footnote: The Reporting Person is reporting on this Schedule 13D as a member of a "group" with the other Reporting Persons. The group beneficially owns 2,451,458 shares of Common Stock owned by all of the Reporting Persons in the aggregate, representing approximately 9.68% of the outstanding shares of Common Stock. See Item 5.
+Row 13 Footnote: For purposes of calculating beneficial ownership percentages in this statement on Schedule 13D, the total number of shares of Common Stock outstanding as of July 31, 2026 is 25,335,215, as reported by the Issuer in its Quarterly Report on Form 10-Q, filed with the SEC on August 6, 2026.
+
+
+
+</commentContent>
+      </reportingPersonInfo>
+    </reportingPersons>
+    <items1To7>
+      <item1>
+        <securityTitle>Common Stock, par value $1.00 per share</securityTitle>
+        <issuerName>Mid Penn Bancorp, Inc.</issuerName>
+        <issuerPrincipalAddress>
+          <street1 xmlns="http://www.sec.gov/edgar/common">2407 Park Drive</street1>
+          <city xmlns="http://www.sec.gov/edgar/common">Harrisburg</city>
+          <stateOrCountry xmlns="http://www.sec.gov/edgar/common">PA</stateOrCountry>
+          <zipCode xmlns="http://www.sec.gov/edgar/common">17110</zipCode>
+        </issuerPrincipalAddress>
+        <commentText>This Amendment No. 7 ("Amendment No. 7") amends the statement on Schedule 13D filed with the Securities and Exchange Commission on November 8, 2024 (the "Original Schedule 13D") as specifically set forth herein (as so amended, the "Schedule 13D").  Except as provided herein, each Item of the Original Schedule 13D remains unchanged.</commentText>
+      </item1>
+      <item2>
+        <principalJob>Item 2(c) of the Original Schedule 13D is hereby amended as follows:
+(i) The principal business of GAH Capital, LLC is to facilitate investment transactions by the GAH Capital Trust.
+(ii) The principal business of GAH Capital Trust is to provide for the security and well-being of George E. Norcross, III's descendants, Alessandra T. Norcross and Alexander S. Norcross. Alessandra T. Norcross is Founder &amp; Chairwoman of PhillyVoice, and Alexander S. Norcross is an Assistant Vice President, Private Banker at Mid Penn Bank, the subsidiary bank of the Issuer. Philip A. Norcross and Susan D. Hudson constitute the Trustees of the GAH Capital Trust (each, a "Trustee" and, collectively, the "Trustees"). The Trustees have delegated full investment authority and the full power to invest and dispose of trust property, including property held through GAH Capital, LLC, to Philip A. Norcross.
+(iii) Philip A. Norcross is Managing Shareholder and Chief Executive Officer of Parker McCay P.A., a law firm, with a business address at 2 Cooper Street, Suite 1901, Camden, New Jersey 08102. Philip A. Norcross is also the Manager of GAH Capital, LLC and a Trustee of the GAH Capital Trust, each with the principal business address set forth above.
+</principalJob>
+      </item2>
+      <item4>
+        <transactionPurpose>Item 4 of the Original Schedule 13D is hereby amended as follows:
+
+The Reporting Persons acquired the shares of Common Stock reported herein for investment purposes.
+
+The Reporting Persons do not have any current plans, proposals or agreements with respect to the shares of Common Stock or the Issuer, including any plans to liquidate, merge, or sell the assets of the Issuer, make any other significant change in the business strategy or corporate structure of the Issuer, or effect any changes to the membership of the board of directors or senior executive officers of the Issuer. The Reporting Persons intend, however, to continue to review, on an ongoing and continuing basis, the investment in the Issuer, and may, from time to time and at any time, acquire additional shares of Common Stock in the open market or otherwise and reserve the right to dispose of any or all of the shares of Common Stock in the open market or otherwise, at any time and from time to time, and to engage in any hedging or similar transactions with respect to the shares of Common Stock.
+
+On May 1, 2026, the Reporting Persons submitted to the Federal Reserve Bank of Philadelphia a notice to the Board of Governors of the Federal Reserve System under the Change in Bank Control Act of 1978, as amended, seeking non-objection to the proposed acquisition of additional shares of Common Stock to increase the Reporting Persons' aggregate percentage ownership of Common Stock up to a maximum of 24.99% (the "Proposed Acquisition"). Any acquisitions of Common Stock are expected to be made in market transactions at the discretion of the Reporting Persons based on numerous factors. There is no assurance that the Reporting Persons will purchase any additional shares of Common Stock but the approvals allow them to without the need to obtain additional approvals. Under the CIBCA, the Reporting Persons could not acquire more than 9.9% of the shares of Common Stock without prior approval of the Federal Reserve. A similar filing was made on July 16, 2026 with the Pennsylvania Department of Banking and Securities, pursuant to Section 112 of the Pennsylvania Banking Code of 1965. Approval of the filings allows future acquisitions above 9.9% up to a maximum of 24.99%.
+
+On September 21, 2026, the Reporting Persons received approval of their Section 112 application from the Pennsylvania Department of Banking and Securities, which was conditioned on obtaining non-objection to the Proposed Acquisition from the Federal Reserve. On October 5, 2026, the Reporting Persons received a notice of non-objection to the Proposed Acquisition from the Federal Reserve.
+</transactionPurpose>
+      </item4>
+      <item5>
+        <percentageOfClassSecurities>Item 5(a) of the Original Schedule 13D is hereby amended and restated as follows:
+
+The Reporting Persons may be deemed to beneficially own 2,451,458 shares of Common Stock or approximately 9.68% of the outstanding shares of Common Stock. For purposes of calculating beneficial ownership percentages in this statement on Schedule 13D, the total number of shares of Common Stock outstanding as of July 31, 2026 is 25,335,215, as reported by the Issuer in its Quarterly Report on Form 10-Q, filed with the SEC on August 6, 2026. Specifically, each Reporting Person beneficially owns such number of shares of Common Stock and such percentage of the outstanding Common Stock as reflected on Items 11 and 13 of the applicable cover page to this Statement.
+</percentageOfClassSecurities>
+      </item5>
+    </items1To7>
+    <signatureInfo>
+      <signaturePerson>
+        <signatureReportingPerson>GAH Capital, LLC</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Philip A. Norcross</signature>
+          <title>Philip A. Norcross</title>
+          <date>10/07/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+      <signaturePerson>
+        <signatureReportingPerson>GAH Capital Trust</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Philip A. Norcross</signature>
+          <title>Philip A. Norcross</title>
+          <date>10/07/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+      <signaturePerson>
+        <signatureReportingPerson>Philip A. Norcross, individually and in his capacity as Manager and Trustee</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Philip A. Norcross</signature>
+          <title>Philip A. Norcross</title>
+          <date>10/07/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+    </signatureInfo>
+  </formData>
+</edgarSubmission>

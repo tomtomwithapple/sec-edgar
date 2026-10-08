@@ -24,7 +24,7 @@ back to the watermark after a longer outage — where the watermark (key `master
 whose index parsed. A 404 for today's index is normal (published late in the evening); a 404 for
 an earlier federal day fails the key after the other days are parsed, so the gap stays visible and
 the watermark stays put. Every response is archived first (raw dataset `edgar_master_idx`, source
-`edgar`). Chained: `edgar_form4` (S24); S25 adds `edgar_sched13` (as for the feed).
+`edgar`). Chained: `edgar_form4` (S24) and `edgar_sched13` (S25), as for the feed.
 """
 
 import re
@@ -226,7 +226,7 @@ JOB = jobs.REGISTRY.register(
         fetch=_fetch,
         parsers={RAW_DATASET: _parse},
         compute=_check_gaps,
-        then=("edgar_form4",),
+        then=("edgar_form4", "edgar_sched13"),
     )
 )
 """Daily-index reconcile at 23:30 ET on federal days (schedule.yaml)."""

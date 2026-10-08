@@ -22,8 +22,8 @@ Paging (`start=` by `COUNT`) stops at the first page holding an entry not newer 
 watermark (the newest `updated` seen, naive UTC), at a short page (the feed's end), or after
 `MAX_PAGES`. Every page is archived first (raw dataset `edgar_feed`, source `edgar`) and parsed
 alone, so a filing whose entries straddle two pages settles its `cik` when the second arrives.
-Chained: `then` = `edgar_submissions`, `edgar_companyfacts`, `edgar_form4` (each drains its kind);
-S25 adds `edgar_sched13` here when it adds that job.
+Chained: `then` = `edgar_submissions`, `edgar_companyfacts`, `edgar_form4`, `edgar_sched13` (each
+drains its kind).
 """
 
 import re
@@ -266,7 +266,7 @@ JOB = jobs.REGISTRY.register(
         keys=(KEY,),
         fetch=_fetch,
         parsers={RAW_DATASET: _parse},
-        then=("edgar_submissions", "edgar_companyfacts", "edgar_form4"),
+        then=("edgar_submissions", "edgar_companyfacts", "edgar_form4", "edgar_sched13"),
     )
 )
 """Latest filings every 15 minutes 06:00–22:00 ET on federal days (schedule.yaml)."""

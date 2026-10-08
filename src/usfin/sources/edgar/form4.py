@@ -45,11 +45,9 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-import yaml
 from defusedxml import ElementTree
 
 from usfin import jobs, raw
-from usfin.settings import ConfigError
 from usfin.sources.edgar import pending
 
 BASE = "https://www.sec.gov/Archives/edgar/data/"
@@ -58,7 +56,7 @@ INDEX_DATASET = "edgar_filing_index"
 XML_DATASET = "edgar_form4_xml"
 KIND = "form4"
 FORMS = ("4", "4/A")
-MAX_DOCS_DEFAULT = 300
+MAX_DOCS_DEFAULT = pending.MAX_DOCS_DEFAULT
 TABLES = ("insider_filing", "insider_owner", "insider_txn", "insider_footnote")
 
 
@@ -298,14 +296,19 @@ def _rows(acc: str, doc: Document, document: str) -> dict[str, list[list[Any]]]:
     }  # fmt: skip
 
 
-def store_document(
-    con: duckdb.DuckDBPyConnection, accession_no: str, doc: Document, *, document: str
+def replace_rows(
+    con: duckdb.DuckDBPyConnection,
+    accession_no: str,
+    rows: dict[str, list[list[Any]]],
+    *,
+    counted: str,
 ) -> int:
-    """Replace the accession's rows when the document differs from them; return `insider_txn`
-    lines inserted or changed (0 when nothing differs)."""
-    rows = _rows(accession_no, doc, document)
+    """Replace the accession's rows in every table of `rows` (table → rows in column order) when
+    any of them differs from what is stored; return the rows of `counted` inserted or changed (0
+    when nothing differs). Shared with `sched13`."""
+    tables = list(rows)
     differs = False
-    for table in TABLES:
+    for table in tables:
         stage = f"_stage_{table}"
         con.execute(f"CREATE OR REPLACE TEMP TABLE {stage} AS SELECT * FROM {table} LIMIT 0")
         if rows[table]:
@@ -319,17 +322,27 @@ def store_document(
         ).fetchone()[0]
         differs = differs or n > 0
     changed = con.execute(
-        "SELECT count(*) FROM (SELECT * FROM _stage_insider_txn EXCEPT"
-        " SELECT * FROM insider_txn WHERE accession_no = ?)",
+        f"SELECT count(*) FROM (SELECT * FROM _stage_{counted} EXCEPT"
+        f" SELECT * FROM {counted} WHERE accession_no = ?)",
         [accession_no],
     ).fetchone()[0]
     if differs:
-        for table in TABLES:
+        for table in tables:
             con.execute(f"DELETE FROM {table} WHERE accession_no = ?", [accession_no])
             con.execute(f"INSERT INTO {table} SELECT * FROM _stage_{table}")
-    for table in TABLES:
+    for table in tables:
         con.execute(f"DROP TABLE _stage_{table}")
     return int(changed) if differs else 0
+
+
+def store_document(
+    con: duckdb.DuckDBPyConnection, accession_no: str, doc: Document, *, document: str
+) -> int:
+    """Replace the accession's rows when the document differs from them; return `insider_txn`
+    lines inserted or changed (0 when nothing differs)."""
+    return replace_rows(
+        con, accession_no, _rows(accession_no, doc, document), counted="insider_txn"
+    )
 
 
 # --- config ------------------------------------------------------------------------------------
@@ -337,17 +350,7 @@ def store_document(
 
 def load_max_docs(config_dir: Path | str) -> int:
     """`form4: max_docs_per_run` in `<config_dir>/edgar.yaml` (default `MAX_DOCS_DEFAULT`)."""
-    path = Path(config_dir) / "edgar.yaml"
-    data = (yaml.safe_load(path.read_text("utf-8")) if path.is_file() else None) or {}
-    if not isinstance(data, dict):
-        raise ConfigError(f"{path}: expected a mapping")
-    section = data.get("form4") or {}
-    if not isinstance(section, dict):
-        raise ConfigError(f"{path}: form4 must be a mapping")
-    value = section.get("max_docs_per_run", MAX_DOCS_DEFAULT)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ConfigError(f"{path}: form4.max_docs_per_run {value!r} is not a count >= 0")
-    return value
+    return pending.max_docs(config_dir, KIND)
 
 
 # --- job ---------------------------------------------------------------------------------------
