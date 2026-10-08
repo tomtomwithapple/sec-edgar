@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head">
+  <h1>Symbols {{ "not matched to" if match == "unmatched" else "matched to" if match == "matched" else "and" }} EDGAR</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+{% if not rates %}
+<p class="notice warn">No open Nasdaq Trader symbols stored yet — run <code>usfin run symbols</code> (and <code>usfin run edgar_tickers</code> for the join).</p>
+{% else %}
+<p class="muted">Open Nasdaq Trader symbols joined to active EDGAR tickers on <code>ticker_norm</code>. Non-ETFs come first: EDGAR's ticker map is mostly operating companies, so most ETF trusts are not in it and an unmatched ETF is expected, not a notation gap.</p>
+
+<h2>Match rate <a class="csv" href="{{ table_csv('rates') }}">CSV</a></h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Kind</th><th>Exchange</th><th class="num">Symbols</th><th class="num">Matched</th><th class="num">Unmatched</th><th class="num">%</th></tr></thead>
+  <tbody>
+  {% for r in rates %}
+    <tr>
+      <td class="name">{{ r.kind }}</td>
+      <td>{{ r.exchange }}</td>
+      <td class="num">{{ r.symbols | num }}</td>
+      <td class="num">{{ r.matched | num }}</td>
+      <td class="num">{% if r.unmatched %}<a href="{{ href(match='unmatched', etf=r.etf_param, exchange=r.exchange_param) }}">{{ r.unmatched | num }}</a>{% else %}0{% endif %}</td>
+      <td class="num">{{ r.matched_pct }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<form class="query" method="get" action="/symbols/unmatched">
+  <label for="match">Show</label>
+  <select id="match" name="match">
+    {% for v, label in [("unmatched", "Unmatched"), ("matched", "Matched"), ("all", "All")] %}<option value="{{ v }}"{% if v == match %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <label for="etf">ETF</label>
+  <select id="etf" name="etf">
+    {% for v, label in [("", "Both"), ("0", "Non-ETF"), ("1", "ETF")] %}<option value="{{ v }}"{% if v == etf_raw %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <label for="exchange">Exchange</label>
+  <select id="exchange" name="exchange">
+    <option value="">All</option>
+    {% for ex in exchanges %}<option value="{{ ex }}"{% if ex == exchange %} selected{% endif %}>{{ ex }}</option>{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<h2>{{ table.rows | length | num }} {{ match if match != "all" else "" }} symbols{% if etf is not none %}, {{ "ETF" if etf else "non-ETF" }}{% endif %}{% if exchange %}, exchange {{ exchange }}{% endif %} <a class="csv" href="{{ table_csv('unmatched') }}">CSV</a></h2>
+{% if table.rows | length > html_rows %}<p class="muted">First {{ html_rows }} of {{ table.rows | length | num }} (non-ETFs first); the CSV has all of them.</p>{% endif %}
+{% if table.rows %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Symbol</th><th>Exch.</th><th>ETF</th><th>Name</th><th>Norm</th><th>EDGAR</th></tr></thead>
+  <tbody>
+  {% for r in table.rows[:html_rows] %}
+    <tr>
+      <td class="name">{{ r.symbol }}</td>
+      <td>{{ r.exchange }}</td>
+      <td>{{ "ETF" if r.etf else "" }}</td>
+      <td class="wrap">{{ r.name }}</td>
+      <td><code>{{ r.ticker_norm }}</code></td>
+      <td class="wrap">{% if r.cik %}<a href="/edgar/{{ r.cik }}">{{ r.edgar_ticker }}</a> {{ r.edgar_title }}
+        {% elif r.root_cik %}<span class="muted">none; same root:</span> <a href="/edgar/{{ r.root_cik }}">{{ r.root_ticker }}</a> <span class="muted">{{ r.root_title }}</span>
+        {% else %}<span class="muted">none</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">none</p>
+{% endif %}
+{% endif %}
+{% endblock %}

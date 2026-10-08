@@ -1,4 +1,7 @@
-"""FastAPI app for `usfin serve`: the local web UI (jobs, alerts) and its small JSON API.
+"""FastAPI app for `usfin serve`: the local web UI and its small JSON API.
+
+Pages: jobs `/`, `/alerts`, the series browser `/series…`, EDGAR `/edgar…` and `/screen`, and
+`/symbols/unmatched`.
 
 `create_app(scheduler)` starts the scheduler and runs catch-up in the app's lifespan and shuts it
 down on exit (`manage=False` leaves both to the caller). Run-now only queues the job on the
@@ -34,7 +37,16 @@ from usfin.sources.edgar import concepts as edgar_concepts
 from usfin.sources.edgar import frames as edgar_frames
 from usfin.web import charts, series
 from usfin.web import edgar as web_edgar
-from usfin.web.tables import Table, cell, csv_href, respond, wants_csv, wants_html
+from usfin.web import symbols as web_symbols
+from usfin.web.tables import (
+    Table,
+    cell,
+    csv_href,
+    csv_response,
+    respond,
+    wants_csv,
+    wants_html,
+)
 
 UI_LOCK_WAIT = 5.0
 HTML_ROWS = 500
@@ -521,6 +533,66 @@ def create_app(
             Table(name, web_edgar.FRAME_COLUMNS, rows),
             frame=frame,
             **context,
+        )
+
+    # --- symbols --------------------------------------------------------------------------
+
+    @app.get("/symbols/unmatched")
+    def symbols_page(request: Request) -> Response:
+        params = request.query_params
+        which = params.get("table", "unmatched")
+        match = params.get("match", "unmatched")
+        etf_raw = params.get("etf", "")
+        exchange = (params.get("exchange") or "").strip().upper() or None
+        if which not in web_symbols.TABLES:
+            raise HTTPException(400, f"table must be one of {', '.join(web_symbols.TABLES)}")
+        if match not in web_symbols.MATCH:
+            raise HTTPException(400, f"match must be one of {', '.join(web_symbols.MATCH)}")
+        if etf_raw not in web_symbols.ETF:
+            raise HTTPException(400, "etf must be 1 (ETFs), 0 (non-ETFs) or empty (both)")
+        etf = web_symbols.ETF[etf_raw]
+        with db() as con:
+            rate_rows = web_symbols.rates(con)
+            known = web_symbols.exchanges(rate_rows)
+            if exchange is not None and exchange not in known:
+                raise HTTPException(400, f"exchange must be one of {', '.join(known) or '(none)'}")
+            rows = web_symbols.symbols(con, match=match, etf=etf, exchange=exchange)
+        rates_table = Table("symbols_match_rates", web_symbols.RATE_COLUMNS, rate_rows)
+        list_table = Table(
+            web_symbols.table_name(match, etf, exchange), web_symbols.SYMBOL_COLUMNS, rows
+        )
+        if wants_csv(request):
+            return csv_response(rates_table if which == "rates" else list_table)
+
+        def href(**change: str) -> str:
+            query = {"match": match, "etf": etf_raw, "exchange": exchange or ""} | change
+            query = {
+                k: v for k, v in query.items() if v and not (k == "match" and v == "unmatched")
+            }
+            return "/symbols/unmatched" + (f"?{urlencode(query)}" if query else "")
+
+        def table_csv(name: str) -> str:
+            query = {k: v for k, v in params.items() if k not in ("format", "table")}
+            return "/symbols/unmatched?" + urlencode({**query, "format": "csv", "table": name})
+
+        return templates.TemplateResponse(
+            request,
+            "symbols_unmatched.html",
+            {
+                "title": "Symbols",
+                "nav": "symbols",
+                "table": list_table,
+                "rates": rate_rows,
+                "exchanges": known,
+                "match": match,
+                "etf": etf,
+                "etf_raw": etf_raw,
+                "exchange": exchange,
+                "href": href,
+                "table_csv": table_csv,
+                "csv_href": csv_href(request),
+                "html_rows": web_symbols.HTML_ROWS,
+            },
         )
 
     # --- API ------------------------------------------------------------------------------
