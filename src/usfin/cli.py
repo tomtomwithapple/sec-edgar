@@ -12,7 +12,7 @@ import uvicorn
 from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
-from usfin.sources import fiscal, treasurydirect
+from usfin.sources import bls, fiscal, treasurydirect
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -353,6 +353,42 @@ def td_backfill(
         f"windows {result.windows} (fetched {result.fetched}, skipped {result.skipped}),"
         f" records {result.records}, rows {result.rows} in {time.monotonic() - started:.1f} s"
     )
+
+
+bls_app = typer.Typer(no_args_is_help=True, help="BLS: series config and the Public Data API.")
+app.add_typer(bls_app, name="bls")
+
+
+@bls_app.command("validate")
+def bls_validate() -> None:
+    """Fetch every config/bls.yaml series (this year and last) in one query; check each has data."""
+    settings = load_settings()
+    series = bls.load_series(settings.config_dir)
+    if not series:
+        typer.echo("no series in bls.yaml", err=True)
+        raise typer.Exit(1)
+    key = settings.bls_api_key
+    typer.echo(f"api: {'v2 (BLS_API_KEY set)' if key else 'v1 (no BLS_API_KEY)'}")
+    year = bls._today().year
+    with _db_session(apply_migrations=True) as con, usfin_http.Client(con) as client:
+        try:
+            raw_id, doc = bls.fetch(client, list(series), year - 1, year, api_key=key)
+        except (usfin_http.HttpError, bls.BlsError) as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from None
+        checks = bls.validate(doc, list(series))
+        bls.upsert_series(con, [series[c.series_id] for c in checks if c.ok])
+    typer.echo(f"raw_id: {raw_id}")
+    for c in checks:
+        if c.ok:
+            latest = f"{c.latest[0]} {c.latest[1]}"
+            typer.echo(f"{c.series_id}\tok\t{latest}\t{c.count} values")
+        else:
+            typer.echo(f"{c.series_id}\tFAILED\t{c.message}")
+    good = sum(c.ok for c in checks)
+    typer.echo(f"{good} of {len(checks)} series ok")
+    if good != len(checks):
+        raise typer.Exit(1)
 
 
 alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")

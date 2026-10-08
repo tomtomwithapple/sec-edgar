@@ -1,1 +1,56 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# BLS series (docs/plans/us-fin-ingest.md, How > BLS). Each entry: id (BLS series ID), fred (the
+# FRED/ALFRED ID of the same series, for the ALFRED backfill), title (stored in bls_series: the
+# keyless v1 API sends no catalog), seasonality (S = seasonally adjusted, U = not), units,
+# decimals (the published precision; versions are compared at it) and jump_pct (value_jump
+# threshold, in percent). Every ID returned data from the live v1 API on 2026-10-08; decimals are
+# the precision those responses carried.
+series:
+  - id: CUSR0000SA0
+    fred: CPIAUCSL
+    title: "CPI-U: All items in U.S. city average, all urban consumers, seasonally adjusted"
+    seasonality: S
+    units: Index 1982-1984=100
+    decimals: 3
+    jump_pct: 2
+  - id: CUSR0000SA0L1E
+    fred: CPILFESL
+    title: "CPI-U: All items less food and energy in U.S. city average, seasonally adjusted"
+    seasonality: S
+    units: Index 1982-1984=100
+    decimals: 3
+    jump_pct: 2
+  - id: WPSFD4
+    fred: PPIFIS
+    title: "PPI: Final demand, seasonally adjusted"
+    seasonality: S
+    units: Index Nov 2009=100
+    decimals: 3
+    jump_pct: 3
+  - id: CES0000000001
+    fred: PAYEMS
+    title: "CES: All employees, total nonfarm, seasonally adjusted"
+    seasonality: S
+    units: Thousands of persons
+    decimals: 0
+    jump_pct: 2
+  - id: LNS14000000
+    fred: UNRATE
+    title: "CPS: Unemployment rate, 16 years and over, seasonally adjusted"
+    seasonality: S
+    units: Percent
+    decimals: 1
+    jump_pct: 15
+  - id: CES0500000003
+    fred: CES0500000003
+    title: "CES: Average hourly earnings of all employees, total private, seasonally adjusted"
+    seasonality: S
+    units: Dollars per hour
+    decimals: 2
+    jump_pct: 2
+  - id: JTS000000000000000JOL
+    fred: JTSJOL
+    title: "JOLTS: Job openings, total nonfarm, seasonally adjusted"
+    seasonality: S
+    units: Thousands
+    decimals: 0
+    jump_pct: 15
