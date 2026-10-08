@@ -14,6 +14,7 @@ from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
+from usfin.sources.edgar import companyfacts as edgar_companyfacts
 from usfin.sources.edgar import submissions as edgar_submissions
 from usfin.sources.edgar import tickers as edgar_tickers
 
@@ -470,30 +471,11 @@ def edgar_submissions_cmd(
     ],
 ) -> None:
     """Run job `edgar_submissions` now for the given CIKs (recent filings and every older page)."""
-    try:
-        ciks = [int(c) for c in cik]
-    except ValueError:
-        raise typer.BadParameter(f"CIKs are digits, got {cik!r}", param_hint="--cik") from None
-    if any(c <= 0 for c in ciks):
-        raise typer.BadParameter(f"CIKs are positive, got {cik!r}", param_hint="--cik")
-    job = edgar_submissions.for_ciks(ciks)
-    registry = jobs.Registry()
-    registry.register(job)
-    started = time.monotonic()
-    result = jobs.run_job(job.name, registry=registry, chain=False)
-    ok = _echo_run(result)
-    if result.run_id is None:
-        raise typer.Exit(1)
+    ciks = _parse_ciks(cik)
+    result, ok, started = _run_for_ciks(edgar_submissions.for_ciks(ciks))
     with _db_session() as con:
-        run_start = con.execute(
-            "SELECT started_at FROM job_run WHERE id = ?", [result.run_id]
-        ).fetchone()[0]
         for c in dict.fromkeys(ciks):
-            requests = con.execute(
-                "SELECT count(*) FROM raw_response WHERE dataset = ? AND fetched_at >= ?"
-                " AND url LIKE ?",
-                [edgar_submissions.RAW_DATASET, run_start, f"%/CIK{c:010d}%"],
-            ).fetchone()[0]
+            requests = _requests_since(con, result, edgar_submissions.RAW_DATASET, c)
             n, lo, hi = con.execute(
                 "SELECT count(*), min(filed_at), max(filed_at) FROM edgar_filing WHERE cik = ?",
                 [c],
@@ -506,6 +488,61 @@ def edgar_submissions_cmd(
     typer.echo(f"{time.monotonic() - started:.1f} s")
     if not ok:
         raise typer.Exit(1)
+
+
+@edgar_app.command("facts")
+def edgar_facts_cmd(
+    cik: Annotated[
+        list[str], typer.Option("--cik", help="Company CIK (digits); repeat for more.")
+    ],
+) -> None:
+    """Run job `edgar_companyfacts` now for the given CIKs (us-gaap and dei XBRL facts)."""
+    ciks = _parse_ciks(cik)
+    result, ok, started = _run_for_ciks(edgar_companyfacts.for_ciks(ciks))
+    with _db_session() as con:
+        for c in dict.fromkeys(ciks):
+            requests = _requests_since(con, result, edgar_companyfacts.RAW_DATASET, c)
+            n, tags, lo, hi = con.execute(
+                f"SELECT count(*), count(DISTINCT tag), min(filed), max(filed)"
+                f" FROM {edgar_companyfacts.TABLE} WHERE cik = ?",
+                [c],
+            ).fetchone()
+            span = f"  filed {lo}..{hi}" if n else ""
+            typer.echo(f"CIK {c:010d}  facts {n}  tags {tags}{span}  requests {requests}")
+    typer.echo(f"{time.monotonic() - started:.1f} s")
+    if not ok:
+        raise typer.Exit(1)
+
+
+def _parse_ciks(cik: list[str]) -> list[int]:
+    try:
+        ciks = [int(c) for c in cik]
+    except ValueError:
+        raise typer.BadParameter(f"CIKs are digits, got {cik!r}", param_hint="--cik") from None
+    if any(c <= 0 for c in ciks):
+        raise typer.BadParameter(f"CIKs are positive, got {cik!r}", param_hint="--cik")
+    return ciks
+
+
+def _run_for_ciks(job: jobs.Job) -> tuple[jobs.RunResult, bool, float]:
+    """Run a per-CIK EDGAR job alone (trigger manual); exit 1 when no run could be logged."""
+    registry = jobs.Registry()
+    registry.register(job)
+    started = time.monotonic()
+    result = jobs.run_job(job.name, registry=registry, chain=False)
+    ok = _echo_run(result)
+    if result.run_id is None:
+        raise typer.Exit(1)
+    return result, ok, started
+
+
+def _requests_since(con, result: jobs.RunResult, dataset: str, cik: int) -> int:
+    """Responses of `dataset` for `cik` archived since the run started."""
+    return con.execute(
+        "SELECT count(*) FROM raw_response WHERE dataset = ? AND url LIKE ? AND fetched_at >="
+        " (SELECT started_at FROM job_run WHERE id = ?)",
+        [dataset, f"%/CIK{cik:010d}%", result.run_id],
+    ).fetchone()[0]
 
 
 alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")

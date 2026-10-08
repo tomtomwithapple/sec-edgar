@@ -1,0 +1,131 @@
+{
+ "cik": 320193,
+ "entityName": "Apple Inc.",
+ "facts": {
+  "dei": {
+   "EntityCommonStockSharesOutstanding": {
+    "label": "Entity Common Stock, Shares Outstanding",
+    "description": "Indicate number of shares or other units outstanding of each of registrant's classes of capital or common stock or other ownership interests, if and as stated on cover of related periodic report. Where multiple classes or units exist define each class/interest by adding class of stock items such as Common Class A [Member], Common Class B [Member] or Partnership Interest [Member] onto the Instrument [Domain] of the Entity Listings, Instrument.",
+    "units": {
+     "shares": [
+      {
+       "end": "2026-07-17",
+       "val": 14594180000,
+       "accn": "0000320193-26-000020",
+       "fy": 2026,
+       "fp": "Q3",
+       "form": "10-Q",
+       "filed": "2026-07-31",
+       "frame": "CY2026Q2I"
+      }
+     ]
+    }
+   }
+  },
+  "us-gaap": {
+   "SalesRevenueNet": {
+    "label": "Revenue, Net (Deprecated 2018-01-31)",
+    "description": "Total revenue from sale of goods and services rendered during the reporting period, in the normal course of business, reduced by sales returns and allowances, and sales discounts.",
+    "units": {
+     "USD": [
+      {
+       "start": "2008-09-28",
+       "end": "2009-09-26",
+       "val": 36537000000,
+       "accn": "0001193125-09-214859",
+       "fy": 2009,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2009-10-27"
+      },
+      {
+       "start": "2008-09-28",
+       "end": "2009-09-26",
+       "val": 42905000000,
+       "accn": "0001193125-10-012091",
+       "fy": 2009,
+       "fp": "FY",
+       "form": "10-K/A",
+       "filed": "2010-01-25"
+      },
+      {
+       "start": "2008-09-28",
+       "end": "2009-09-26",
+       "val": 42905000000,
+       "accn": "0001193125-10-238044",
+       "fy": 2010,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2010-10-27"
+      },
+      {
+       "start": "2008-09-28",
+       "end": "2009-09-26",
+       "val": 42905000000,
+       "accn": "0001193125-11-282113",
+       "fy": 2011,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2011-10-26",
+       "frame": "CY2009"
+      }
+     ]
+    }
+   },
+   "Assets": {
+    "label": "Assets",
+    "description": "Sum of the carrying amounts as of the balance sheet date of all assets that are recognized. Assets are probable future economic benefits obtained or controlled by an entity as a result of past transactions or events.",
+    "units": {
+     "USD": [
+      {
+       "end": "2009-09-26",
+       "val": 53851000000,
+       "accn": "0001193125-09-214859",
+       "fy": 2009,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2009-10-27"
+      },
+      {
+       "end": "2009-09-26",
+       "val": 47501000000,
+       "accn": "0001193125-10-012091",
+       "fy": 2009,
+       "fp": "FY",
+       "form": "10-K/A",
+       "filed": "2010-01-25"
+      }
+     ]
+    }
+   },
+   "EarningsPerShareBasic": {
+    "label": "Earnings Per Share, Basic",
+    "description": "The amount of net income (loss) for the period per each share of common stock or unit outstanding during the reporting period.",
+    "units": {
+     "USD/shares": [
+      {
+       "start": "2008-09-28",
+       "end": "2009-09-26",
+       "val": 6.39,
+       "accn": "0001193125-09-214859",
+       "fy": 2009,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2009-10-27"
+      },
+      {
+       "start": "2008-09-28",
+       "end": "2009-09-26",
+       "val": 9.22,
+       "accn": "0001193125-10-012091",
+       "fy": 2009,
+       "fp": "FY",
+       "form": "10-K/A",
+       "filed": "2010-01-25"
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S20 done — S18 blocked (FRED_API_KEY) — next: S21
+Status: S21 done — S18 blocked (FRED_API_KEY) — next: S22
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -715,6 +715,27 @@ zero-padded in URLs, stored as BIGINT.
   (`cik, taxonomy, tag, unit, accn, period_start, period_end`); instant facts store
   `period_start = period_end`, `is_instant = true` (DuckDB PKs reject NULL). Only `us-gaap` and
   `dei`.
+  *(Amended in S21.)* Live 2026-10-08: the document is `{cik, entityName, facts: {taxonomy: {tag:
+  {label, description, units: {unit: [fact]}}}}}`, a fact `{start?, end, val, accn, fy, fp, form,
+  filed, frame?}`; Apple 3.8 MB (dei + us-gaap only, 25 135 facts), JPMorgan 8.0 MB with `invest`,
+  `srt`, `ffd`, `ecd` besides (dropped; 49 946 us-gaap + dei facts kept). The planned PK is unique in
+  both (no instant/one-day-duration clash). `fy`/`fp` are **null** on facts from forms without a
+  fiscal period (JPMorgan's DEF 14A pay-versus-performance `NetIncomeLoss`), so both are nullable;
+  forms seen: 10-K, 10-Q, 8-K, 10-K/A, 10-Q/A, DEF 14A. `frame` sits on one filing per period and
+  SEC moves it to the latest, so it is the column a refetch updates (a fact absent from a later
+  document is kept). Types: `cik` BIGINT, `fy` SMALLINT, dates DATE, `value` DOUBLE (no |val| above
+  2^53 in either company), strings VARCHAR (DuckDB dictionary-compresses them). No `raw_id`: facts
+  are not versioned rows, every accn is its own row. Migration `009_xbrl_fact.sql` with macro
+  `xbrl_as_of(d)` = `SELECT * FROM xbrl_fact WHERE filed <= CAST(d AS DATE)`. Module
+  `usfin.sources.edgar.companyfacts`: `store_document(con, doc, name=)` (name
+  `CIK##########.json`, as companyfacts.zip members are named) for S26, `upsert_facts` stages
+  through one JSON text parameter (S8) and counts only new or changed rows; registered keys = CIKs of
+  open `pending_doc` kind `companyfacts` (S22), `usfin edgar facts --cik N` (`for_ciks`), watermark
+  key = 10-digit CIK, value = newest `filed`. **Storage: 91 bytes per fact with the PK, 21 without**
+  (75 081 facts copied into fresh DuckDB files, checkpointed): the 7-column PK's ART index is about
+  three quarters of the table. S26's projection must use the with-PK figure; if the full load does
+  not fit, dropping the PK (the upsert already finds changes by anti-join; only its `ON CONFLICT`
+  needs it) is the first lever — the user's call.
 - Feed (job `edgar_feed`, every 15 min 06:00–22:00 ET on federal days, raw dataset
   `edgar_feed`): `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom&count=100`
   paged with `start=` until an entry's `updated` is ≤ the watermark (newest `updated` seen) or 10
@@ -1211,7 +1232,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S18 ALFRED backfill | blocked: FRED_API_KEY not set in .env (needed to record fixtures and run); add it and re-run `/plan-build docs/plans/us-fin-ingest.md --slice S18` | | | | |
 | S19 EDGAR tickers and ticker_norm | done | 2026-10-08 | 141d84b | 21 new (test_edgar_tickers 10, test_ticker_norm 11); suite 355 passed | First live SEC traffic, 3 requests in all, no 403, `SEC_USER_AGENT` from `.env`: one `usfin http get` of company_tickers.json to record the fixture (raw 653, dataset `http_get`, 798 727 bytes, trimmed to 14 verbatim entries, 1 KB), then the Run. `usfin run edgar_tickers` on `data/usfin.duckdb` (Mac clock 22:27 ET on 10-07; migration 007 applied) → `#24 ok rows 10434` in 1.3 s; again → `#25 ok rows 0` (C2; same sha256 body); `usfin reparse edgar_tickers` replayed 2 responses, rows 0. `edgar_company` 10 434 rows, 8 016 CIKs, all active, 10 434 distinct `ticker_norm`. `usfin edgar company AAPL` → CIK 0000320193 Apple Inc., AAPL; `brk.b` → 0001067983 BRK-A/BRK-B (norm BRK.A/BRK.B); `ZZZZQ` exit 1. `usfin schedule`: edgar_tickers 07:15 daily (any). No alerts. Plan amended (How › SEC EDGAR, Nasdaq Trader): the file's shape and counts, `updated_at` = the changing response's `fetched_at` (so reparse is identical), EDGAR suffixes `-UN`/`-WT`/`-RI` (units won't meet Nasdaq `.U` under `ticker_norm` — S31 decides), and a SEC 403/block makes the run `failed`, not `skipped` (runner not wired; left to S22). |
 | S20 EDGAR submissions | done | 2026-10-08 | a679aac | 17 new (test_edgar_submissions); suite 372 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get` (7 requests): Apple's JSON and its one page (fixtures, trimmed to 7 + 4 filings), two Apple 8-K `-index-headers.html` (proved `acceptanceDateTime`'s `Z` is false: header 16:30:28 EDT vs JSON 00:30:28Z next day, 16:30:33 EST vs 02:30:33Z), Berkshire (1 page, so not heavy enough) and JPMorgan (70 pages). On `data/usfin.duckdb` (migration 008 applied): `usfin edgar submissions --cik 320193` → `#26 ok rows 2264` (1 000 recent + 1 264 on page 001, 1994-01-26..2026-10-05), 2 requests, 3.8 s; `--cik 19617` (JPMorgan, the paged-history check) → `#27 ok rows 168590` (26 311 recent — one year — + 142 279 on 70 pages, exactly the listed counts, 1994-01-20..2026-10-07; 130 136 424B2), 71 requests, 29.8 MB of JSON, 108 s, nearly all of it SEC transfer time (parsing all 75 responses takes 2.8 s); both again → `#28 ok rows 0`, 1 request per CIK (pages skipped by listing), 30.5 s (JPMorgan's 4.6 MB main JSON); `usfin reparse edgar_submissions` replayed 75 responses, rows 0; on a scratch copy with the three tables emptied it rebuilt 170 854 filings, 170 854 parties and 71 pages to the identical md5 in 3.8 s. `usfin run edgar_submissions` (no `pending_doc` yet) → `#29 ok rows 0`, no request. Watermarks 0000320193 = 2026-10-05, 0000019617 = 2026-10-07; no alerts; `raw/` 9.9 MB, DB 80 MB. Plan amended (How › SEC EDGAR, Submissions): false-UTC acceptance times, `filed_at` DATE, fill rule as shared code, party role `submissions` (S22 decides cik precedence over it), pages numbered newest first with listing dates ≠ filing dates so tracked by listing in new `edgar_submissions_page`, keys from `pending_doc`, `--cik` CLI. |
-| S21 EDGAR companyfacts | todo | | | | |
+| S21 EDGAR companyfacts | done | 2026-10-08 | | 18 new (test_edgar_companyfacts); suite 390 passed | Live, no 403, `SEC_USER_AGENT` from `.env`, 6 requests in all. Probes via `usfin http get` (raw 737/738, dataset `http_get`): Apple companyfacts 3 789 099 bytes, JPMorgan 7 977 054 bytes (taxonomies dei, us-gaap, invest, srt, ffd, ecd); fixtures trimmed to 9 + 8 verbatim facts (instant, duration, Apple FY2009 `SalesRevenueNet` 36 537 M in the 10-K of 2009-10-27 restated to 42 905 M by the 10-K/A of 2010-01-25, USD/shares, a DEF 14A fact with null `fy`/`fp`, and `invest`/`srt`/`ecd` to be dropped). On `data/usfin.duckdb` (migration 009 applied): `usfin edgar facts --cik 320193` → `#30 ok rows 25135` (505 tags, filed 2009-07-22..2026-07-31), 1 request, 5.2 s; `--cik 19617` → `#31 ok rows 49946` (920 tags, filed 2009-08-10..2026-08-06), 5.7 s — nearly all transfer; both again → `#32 ok rows 0` (same sha256 bodies), 17.2 s of SEC transfer; `usfin reparse edgar_companyfacts` replayed 4 responses in 1.7 s, rows 0; on a scratch copy with `xbrl_fact` emptied, reparse rebuilt 75 081 facts to the identical md5 in 1.6 s (~95 000 facts/s parsed). `xbrl_as_of`: Apple revenue tags as of 2025-10-30 vs 2025-10-31 = 325 vs 328 rows, nothing removed, the 3 added all accn 0000320193-25-000079 (10-K filed 2025-10-31); as of 2009-10-26 vs 2010-01-25 = 4 vs 12, the 8 added from the 10-K, 10-Q and 10-K/A filed in between. Storage: JSON gzips to 6.5 % in `raw/` (256 KB + 503 KB, shared by the 3 fetches each); **xbrl_fact 91 bytes/fact with the PK, 21 without** (fresh files, checkpointed; the DB file itself barely moved, 71.6 → 72.1 MB, as freed blocks were reused). Plan amended (How › SEC EDGAR › Companyfacts): document shape, nullable `fy`/`fp`, `frame` moves, types, `xbrl_as_of` definition, the PK's storage cost as a lever for S26. |
 | S22 EDGAR feed and document queue | todo | | | | |
 | S23 EDGAR daily-index reconcile | todo | | | | |
 | S24 Form 4 | todo | | | | |

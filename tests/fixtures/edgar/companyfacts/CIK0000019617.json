@@ -1,0 +1,137 @@
+{
+ "cik": 19617,
+ "entityName": "JPMORGAN CHASE & CO",
+ "facts": {
+  "dei": {
+   "EntityCommonStockSharesOutstanding": {
+    "label": "Entity Common Stock, Shares Outstanding",
+    "description": "Indicate number of shares or other units outstanding of each of registrant's classes of capital or common stock or other ownership interests, if and as stated on cover of related periodic report. Where multiple classes or units exist define each class/interest by adding class of stock items such as Common Class A [Member], Common Class B [Member] or Partnership Interest [Member] onto the Instrument [Domain] of the Entity Listings, Instrument.",
+    "units": {
+     "shares": [
+      {
+       "end": "2025-01-31",
+       "val": 2796106099,
+       "accn": "0000019617-25-000270",
+       "fy": 2024,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2025-02-14",
+       "frame": "CY2024Q4I"
+      }
+     ]
+    }
+   }
+  },
+  "invest": {
+   "DerivativeNotionalAmount": {
+    "label": "Derivative, Notional Amount",
+    "description": "Aggregate notional amount specified by the derivative(s). Expressed as an absolute value.",
+    "units": {
+     "USD": [
+      {
+       "end": "2009-12-31",
+       "val": 24900000000,
+       "accn": "0000950123-11-019773",
+       "fy": 2010,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2011-02-28"
+      },
+      {
+       "end": "2009-12-31",
+       "val": 24900000000,
+       "accn": "0000950123-11-095314",
+       "fy": 2010,
+       "fp": "FY",
+       "form": "8-K",
+       "filed": "2011-11-04",
+       "frame": "CY2009Q4I"
+      }
+     ]
+    }
+   }
+  },
+  "srt": {
+   "PayablesToBrokerDealersAndClearingOrganizations": {
+    "label": "Broker-Dealer, Payable to Other Broker-Dealer and Clearing Organization",
+    "description": "Amount payable to other broker-dealer and clearing organization, including, but not limited to, security failed-to-receive, deposit received for security loaned, open transaction, and floor-brokerage payable.",
+    "units": {
+     "USD": [
+      {
+       "end": "2018-12-31",
+       "val": 114794000000,
+       "accn": "0000019617-20-000257",
+       "fy": 2019,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2020-02-25",
+       "frame": "CY2018Q4I"
+      }
+     ]
+    }
+   }
+  },
+  "ecd": {
+   "CoSelectedMeasureAmt": {
+    "label": "",
+    "description": "",
+    "units": {
+     "pure": [
+      {
+       "start": "2021-01-01",
+       "end": "2021-12-31",
+       "val": 0.23,
+       "accn": "0000019617-26-000096",
+       "fy": null,
+       "fp": null,
+       "form": "DEF 14A",
+       "filed": "2026-04-06",
+       "frame": "CY2021"
+      }
+     ]
+    }
+   }
+  },
+  "us-gaap": {
+   "NetIncomeLoss": {
+    "label": "Net Income (Loss) Attributable to Parent",
+    "description": "The portion of profit or loss for the period, net of income taxes, which is attributable to the parent.",
+    "units": {
+     "USD": [
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": 58471000000,
+       "accn": "0000019617-25-000270",
+       "fy": 2024,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2025-02-14"
+      },
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": 58471000000,
+       "accn": "0001628280-26-008131",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-13"
+      },
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": 58500000000,
+       "accn": "0000019617-26-000096",
+       "fy": null,
+       "fp": null,
+       "form": "DEF 14A",
+       "filed": "2026-04-06",
+       "frame": "CY2024"
+      }
+     ]
+    }
+   }
+  }
+ }
+}
