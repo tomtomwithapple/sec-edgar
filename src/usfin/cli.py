@@ -12,10 +12,12 @@ import uvicorn
 
 from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
-from usfin.settings import load_settings
+from usfin.settings import ConfigError, load_settings
 from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
 from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
+from usfin.sources.edgar import concepts as edgar_concepts
+from usfin.sources.edgar import frames as edgar_frames
 from usfin.sources.edgar import submissions as edgar_submissions
 from usfin.sources.edgar import tickers as edgar_tickers
 
@@ -637,6 +639,74 @@ def edgar_backfill_cmd(
         raise typer.Exit(1)
     if loaded.errors:
         raise typer.Exit(1)
+
+
+@edgar_app.command("frame")
+def edgar_frame_cmd(
+    taxonomy: str = typer.Argument(..., help="us-gaap or dei."),
+    tag: str = typer.Argument(..., help="XBRL tag, e.g. Revenues."),
+    unit: str = typer.Argument(..., help="Unit, e.g. USD, USD-per-shares, shares."),
+    period: str = typer.Argument(..., help="CY2025, CY2025Q2, or with I for an instant."),
+    limit: int = typer.Option(20, min=0, help="Points to print, largest first (0 = all)."),
+) -> None:
+    """One concept for one period across companies, from SEC's frames API (cached 24 h)."""
+    started = time.monotonic()
+    try:
+        with _db_session(apply_migrations=True) as con, usfin_http.Client(con) as client:
+            frame = edgar_frames.get_frame(
+                con, client, taxonomy=taxonomy, tag=tag, unit=unit, period=period,
+                now=datetime.now(UTC), raw_dir=client.settings.raw_dir,
+            )  # fmt: skip
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="PERIOD") from None
+    except (edgar_frames.FramesError, usfin_http.HttpError, ConfigError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    how = "cached" if frame.cached else "fetched"
+    typer.echo(
+        f"{edgar_frames.key(taxonomy, tag, unit, period)}  {how} {frame.fetched_at:%Y-%m-%d %H:%M}Z"
+        f"  raw_id {frame.raw_id}  points {len(frame.points)} (pts {frame.pts})"
+    )
+    points = sorted(frame.points, key=lambda p: (-p.value, p.cik))
+    for p in points[:limit] if limit else points:
+        span = f"{p.period_start or ''}..{p.period_end}"
+        typer.echo(f"{p.cik:010d}  {p.value:>20,.0f}  {span}  {p.accn}  {p.entity_name}")
+    typer.echo(f"{time.monotonic() - started:.1f} s")
+
+
+@edgar_app.command("screen")
+def edgar_screen_cmd(
+    concept: str = typer.Argument(..., help="Concept name in config/concepts.yaml, e.g. revenue."),
+    period: str = typer.Argument(..., help="CY2025, CY2025Q2, or with I for an instant."),
+    limit: int = typer.Option(20, min=0, help="Companies to print, largest first (0 = all)."),
+) -> None:
+    """One concept for one period across companies from `xbrl_fact`, with the tag used."""
+    settings = load_settings()
+    try:
+        cmap = edgar_concepts.load_concepts(settings.config_dir)
+        spec = cmap[concept]
+    except ConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    try:
+        with _db_session(apply_migrations=True) as con:
+            started = time.monotonic()  # the query alone, not opening the DB
+            rows = edgar_concepts.screen(con, spec, period)
+            elapsed = time.monotonic() - started
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="PERIOD") from None
+    for r in rows[:limit] if limit else rows:
+        typer.echo(
+            f"{r.cik:010d}  {r.value:>20,.2f}  {r.tag:<55}  {r.period_start}..{r.period_end}"
+            f"  {r.form:<6} {r.filed}  {r.accn}  {r.name or ''}"
+        )
+    by_tag = {t: sum(r.tag == t for r in rows) for t in spec.tags}
+    typer.echo(
+        f"{concept} (concepts.yaml v{cmap.version}, {spec.taxonomy} {spec.unit}) {period}:"
+        f" companies {len(rows)}; "
+        + ", ".join(f"{t} {n}" for t, n in by_tag.items())
+    )
+    typer.echo(f"query {elapsed:.2f} s")
 
 
 def _parse_ciks(cik: list[str]) -> list[int]:

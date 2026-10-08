@@ -1,1 +1,51 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# Standard concepts -> candidate XBRL tags, in order of preference (docs/plans/us-fin-ingest.md,
+# How > SEC EDGAR > Concept map; S28). A screen (`usfin edgar screen <concept> <period>`, the
+# /screen page) takes, per company, the FIRST tag in the list that company reports for the period
+# and shows which tag it used. Per concept: `taxonomy` (us-gaap or dei, default us-gaap), `unit`
+# (default USD; frames and facts are per unit) and `tags`. Bump `version` whenever a list
+# changes, since screens move with it.
+version: 1
+
+concepts:
+  revenue:
+    tags:
+      - Revenues
+      - RevenueFromContractWithCustomerExcludingAssessedTax
+      - SalesRevenueNet
+      - RevenueFromContractWithCustomerIncludingAssessedTax
+      - SalesRevenueGoodsNet
+  net_income:
+    tags:
+      - NetIncomeLoss
+      - ProfitLoss
+      - NetIncomeLossAvailableToCommonStockholdersBasic
+  operating_income:
+    tags:
+      - OperatingIncomeLoss
+  eps_diluted:
+    unit: USD/shares
+    tags:
+      - EarningsPerShareDiluted
+      - EarningsPerShareBasicAndDiluted
+  assets:            # instant: use a CY####Q#I period
+    tags:
+      - Assets
+  liabilities:       # instant
+    tags:
+      - Liabilities
+  stockholders_equity:  # instant
+    tags:
+      - StockholdersEquity
+      - StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+  cash:              # instant
+    tags:
+      - CashAndCashEquivalentsAtCarryingValue
+      - CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents
+  operating_cash_flow:  # 10-Qs report it year to date, so most quarterly frames miss it
+    tags:
+      - NetCashProvidedByUsedInOperatingActivities
+  shares_outstanding:  # instant, from the cover page
+    taxonomy: dei
+    unit: shares
+    tags:
+      - EntityCommonStockSharesOutstanding

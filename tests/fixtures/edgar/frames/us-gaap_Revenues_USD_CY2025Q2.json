@@ -1,0 +1,38 @@
+{
+ "taxonomy": "us-gaap",
+ "tag": "Revenues",
+ "ccp": "CY2025Q2",
+ "uom": "USD",
+ "label": "Revenues",
+ "description": "Amount of revenue recognized from goods sold, services rendered, insurance premiums, or other activities that constitute an earning process. Includes, but is not limited to, investment and interest income before deduction of interest expense when recognized as a component of revenue, and sales and trading gain (loss).",
+ "pts": 1939,
+ "data": [
+  {
+   "accn": "0001193125-26-338211",
+   "cik": 2098,
+   "entityName": "ACME UNITED CORP",
+   "loc": "US-CT",
+   "start": "2025-04-01",
+   "end": "2025-06-30",
+   "val": 53996000
+  },
+  {
+   "accn": "0000002969-26-000036",
+   "cik": 2969,
+   "entityName": "AIR PRODUCTS AND CHEMICALS, INC.",
+   "loc": "US-PA",
+   "start": "2025-04-01",
+   "end": "2025-06-30",
+   "val": 3022700000
+  },
+  {
+   "accn": "0000104169-26-000154",
+   "cik": 104169,
+   "entityName": "WALMART INC.",
+   "loc": "US-AR",
+   "start": "2025-05-01",
+   "end": "2025-07-31",
+   "val": 177402000000
+  }
+ ]
+}
