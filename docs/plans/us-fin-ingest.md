@@ -969,6 +969,15 @@ zero-padded in URLs, stored as BIGINT.
   `skipped` and raises `disk_low` (subject = dataset). The guard is re-checked every 1 000
   parsed members during a full load and stops cleanly (committed members stay, CRCs make the
   next run resume) if free space falls below the floor.
+  **Decisions after S26 (user, 2026-10-08).** (1) `xbrl_fact` has **no primary key**: uniqueness
+  is the loader's job (per-document diff/replace), saving ~8 GiB on the full load (20 vs 90
+  bytes/fact); a migration rebuilds the table without it, and tests prove re-runs, reparse and the
+  bulk path still produce no duplicate (cik, taxonomy, tag, unit, accn, period_start, period_end).
+  (2) The submissions bulk backfill and weekly reconcile load only members whose CIK is in
+  `edgar_company` (active or not), including their paged `-submissions-NNN.json` members; the
+  ~985 000 other filers (people, funds) are not loaded from the ZIP — feed, nightly index and
+  per-CIK submissions still record their new filings. (3) Keep the last **2** bulk ZIPs per dataset
+  (as planned).
   **Measure before the full load.** The S26 sample run (`--limit 200` per dataset) records, in
   `edgar_bulk_estimate(dataset, measured_at, zip_bytes, members_total, members_sampled,
   db_bytes_before, db_bytes_after, rows_inserted, seconds)`, and `usfin edgar backfill --estimate`
@@ -1371,7 +1380,8 @@ Done when: C17 streaming half and the guard covered; a projection for both datas
 Depends on: S26
 Red: `tests/test_edgar_bulk_reconcile.py` — second ZIP with one changed member → only that member reparsed; prune keeps 2 per dataset after the job; low free disk → `skipped` run + one `disk_low` alert, nothing downloaded.
 Green: job `edgar_bulk`, schedule Sun 03:00 any, guard wired into the job.
-Run: `uv run usfin run edgar_bulk` live with `--limit` env cap; then, **only if S26's projection fits under the guard**, the **full** companyfacts + submissions load once — record time and DB size in README and here. If it does not fit, stop and report it as a block with the numbers.
+Also (decisions after S26): migration dropping the `xbrl_fact` PK with no-duplicate tests; submissions bulk filtered to `edgar_company` CIKs (+ their paged members) with a test.
+Run: `uv run usfin run edgar_bulk` live with `--limit` env cap; then, **only if the projection (recomputed for no PK and ticker-CIK submissions) fits under the guard**, the **full** companyfacts + submissions load once — record time and DB size in README and here. If it does not fit, stop and report it as a block with the numbers.
 Done when: C17 covered; full-load numbers recorded, or the block reported with the projection.
 
 ### S28 — Frames and concept map
@@ -1470,3 +1480,4 @@ Done when: C18 covered; every job has at least one ok live run.
 | S33 UI: EDGAR company and screen | todo | | | | |
 | S34 UI: unmatched symbols | todo | | | | |
 | S35 Ops: doctor, launchd, README, live smoke | todo | | | | |
+- Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
