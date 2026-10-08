@@ -5,6 +5,7 @@ import duckdb
 import typer
 
 from usfin import __version__, raw, store
+from usfin import http as usfin_http
 from usfin.settings import load_settings
 
 app = typer.Typer(no_args_is_help=True)
@@ -83,3 +84,27 @@ def raw_prune(
         typer.echo(f"dry run: {len(candidates)} candidates, {len(blobs)} blobs, {size} bytes")
     else:
         typer.echo(f"pruned {len(candidates)} rows, {len(blobs)} blobs, {size} bytes")
+
+
+http_app = typer.Typer(no_args_is_help=True, help="HTTP: one archived request through the client.")
+app.add_typer(http_app, name="http")
+
+
+@http_app.command("get")
+def http_get(
+    url: str,
+    source: str = typer.Option("manual", help="Raw store source (blob directory)."),
+    dataset: str = typer.Option("http_get", help="Raw response dataset name."),
+) -> None:
+    """GET URL with rate limit and retries, archive the response, print status, raw_id, bytes."""
+    with _db_session(apply_migrations=True) as con, usfin_http.Client(con) as client:
+        try:
+            raw_id, response = client.get(url, source=source, dataset=dataset)
+        except usfin_http.HttpError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            if exc.raw_id is not None:
+                typer.echo(f"raw_id: {exc.raw_id}", err=True)
+            raise typer.Exit(1) from None
+    typer.echo(f"status: {response.status_code}")
+    typer.echo(f"raw_id: {raw_id}")
+    typer.echo(f"bytes: {len(response.content)}")

@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S2 done — next: S3
+Status: S3 done — next: S4
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -284,6 +284,15 @@ bucket, others default 4 rps), acquires a token from a thread-safe token bucket,
 and record `skipped` until then — no sleeping in the worker. Every final response (success or
 error status) is archived through the raw store before returning `(raw_id, response)`. SEC hosts
 require `SEC_USER_AGENT`; missing → `ConfigError` before any socket opens.
+Amended in S3: `Client(con, …)` takes the session, like `raw.save`/`raw.open`. The bucket is a
+token bucket of capacity 1 (no banked burst: grants ≥ 1/rate apart, so ≤ rate in any 1 s window).
+`hosts.yaml` is `default_rate` + named `buckets: {name: {hosts, rate, headers}}`; a SEC bucket
+above 8 rps is a `ConfigError` on load; which hosts are SEC (`sec.gov`, `*.sec.gov`) is decided by
+code, not config. Only the final attempt is archived (retried 429/5xx bodies are not); a 5xx still
+failing after 5 tries is archived and raises `HttpError(raw_id, response)`, a transport failure
+raises `HttpError` with no `raw_id`; a SEC 403 is archived, not retried, and raises `SecBlocked`
+(a `HttpError`). The process-wide block is `http.SEC_BLOCK` (`.blocked()`, `.remaining()`) and
+the limiters `ratelimit.LIMITERS`. `usfin http get URL [--source] [--dataset]` is the manual probe.
 
 **Calendars (C6).** `is_federal_day(d)`: weekday, not in `holidays.US(observed=True)`;
 `is_bond_day(d)`: federal day and not Good Friday; `is_nyse_day(d)`: weekday, not in
@@ -824,7 +833,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S0 Scaffold | done | 2026-10-08 | 70b5a87 | 10 new (test_cli 2, test_settings 8); suite 10 passed | `uv sync` resolved 43 packages on CPython 3.13.14; `usfin version` printed `0.1.0`; uv.lock pins all 14 Tech stack versions exactly (deps pinned with `==` in pyproject); `uv build` made sdist + wheel. Real env wins over `.env`; `.env` is read without mutating `os.environ`; bad `USFIN_LOCK_WAIT` → `ConfigError`. No plan change. |
 | S1 Store, migrations, lock wait | done | 2026-10-08 | 352a7c4 | 12 new (test_store); suite 22 passed | `db migrate` on a fresh `data/usfin.duckdb` printed `applied 001_core`, re-run `schema up to date`; `db info` printed path, `version: 1`, tables `alert, job_run, raw_response, schema_version, watermark`. With a second python process holding the real file, `USFIN_LOCK_WAIT=1 usfin db info` exited 1 after ~1 s with `database busy — …` (DuckDB `IOException` "Could not set lock on file … Conflicting lock is held in … (PID n)"); after release it opened clean. Each migration runs in its own transaction (a broken one rolls back fully). Plan amended (Core tables): `job_run.status` gains `running`; ids from sequences. |
 | S2 Raw store | done | 2026-10-08 | d5475d2 | 14 new (test_raw); suite 36 passed | `usfin raw prune --dry-run` on the real (empty) store printed `dry run: 0 candidates, 0 blobs, 0 bytes`, exit 0; `db info` unchanged (version 1). Every body (bytes, stream or chunk iterable) is spooled to a temp file in `CHUNK_SIZE` reads while hashing, then gzipped or renamed to `.zip` — never read whole, no temp left behind. Prune ranks distinct blobs per dataset by latest fetch (an unchanged ZIP fetched twice is one blob), marks rows in one transaction, deletes blobs only no unpruned row still uses. Plan amended (Raw store): `raw.open(con, raw_id)` takes the session; blob-vs-row ranking stated. |
-| S3 Rate limiter and HTTP client | todo | | | | |
+| S3 Rate limiter and HTTP client | done | 2026-10-08 | | 27 new (test_ratelimit 9, test_http 18); suite 63 passed | `usfin http get …/debt_to_penny?page%5Bsize%5D=1` (live, keyless) printed `status: 200`, `raw_id: 1`, `bytes: 1765`, exit 0; the `raw_response` row has source `manual`, dataset `http_get`, the encoded URL, `application/json`, a request sha, and `raw.open` returns the JSON (decoded: httpx un-gzips before archiving). A second run made raw_id 2 in ~1.4 s. Unsorted, Fiscal Data returns the oldest record first (1993-04-01) — S7 must send `sort=`. No SEC request sent (SEC tested with respx only). Plan amended (HTTP): `Client(con, …)`, capacity-1 bucket, `hosts.yaml` shape, SEC hosts decided by code, only the final attempt archived, error/`SecBlocked` carry `raw_id`. |
 | S4 Calendars | todo | | | | |
 | S5 Job runner, run log, watermarks | todo | | | | |
 | S6 Reparse and chaining | todo | | | | |

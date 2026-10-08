@@ -1,1 +1,11 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# Per-host rate limits (requests per second) and extra request headers.
+# Hosts listed in one bucket share its limit; unlisted hosts get their own bucket at default_rate.
+# SEC hosts may never exceed 8 rps (enforced on load). User-Agent is set by code, not here.
+default_rate: 4
+
+buckets:
+  sec:
+    hosts: [www.sec.gov, data.sec.gov]
+    rate: 8
+    headers:
+      Accept-Encoding: gzip, deflate
