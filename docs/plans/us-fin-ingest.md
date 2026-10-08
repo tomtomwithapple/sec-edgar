@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: review folded in — next: slicing
+Status: slicing done — next: S0
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -548,3 +548,303 @@ DuckDB 1.5.6 / holidays 0.106 / APScheduler 3.11.3). Decisions by the user 2026-
 - Decision B (raw retention): keep the last 2 bulk ZIPs per dataset, everything else forever — decided by user.
 - Decision C (companyfacts scope): every 10-K/10-Q filer + watchlist 8-K filers — decided by user.
 - Decision D (BLS key): keyless v1 with 15-min retries; key optional — decided by user earlier (keyless fallbacks, keys optional).
+
+## Slices
+
+Every slice closes with the gate (`uv run ruff check . && uv run pytest -q && uv build -q`), its
+Run step, its progress row, one commit `S<n>: <finding>`, and a push to `origin feat/us-fin-ingest`.
+"Run" steps that need `SEC_USER_AGENT`, `BLS_API_KEY` or `FRED_API_KEY` and find it unset report
+a block instead of guessing.
+
+### S0 — Scaffold
+Depends on: none
+Red: `tests/test_cli.py` — `usfin version` prints the package version; `tests/test_settings.py` — env/`.env` resolution of `USFIN_DB`, `USFIN_RAW`, `USFIN_CONFIG`, `USFIN_LOCK_WAIT` defaults and overrides.
+Green: `pyproject.toml` (deps pinned per Tech stack, uv_build, `usfin` script, pytest `live` marker + `addopts = "-m 'not live'"`, ruff 100), `.python-version` 3.13, `uv.lock`, `.env.example`, `src/usfin/{__init__,cli,settings}.py`, empty `config/` files (How › Conventions).
+Run: `uv sync && uv run usfin version`
+Done when: gate green; `uv.lock` pins exactly the Tech stack versions (C12).
+
+### S1 — Store, migrations, lock wait
+Depends on: S0
+Red: `tests/test_store.py` — migrations apply once in order and record `schema_version`; re-open applies nothing; core tables `raw_response`, `job_run`, `watermark`, `alert` exist with their PKs/uniques; a second *process* holding the file makes `session(wait=1)` raise `DatabaseLocked` after ~1 s; in-process double open works.
+Green: `store.py` session + migration runner, `migrations/001_core.sql` (How › Storage and concurrency, Core tables).
+Run: `uv run usfin db migrate && uv run usfin db info` (prints path, version, tables).
+Done when: lock contention surfaces as `DatabaseLocked`, never a hang or corruption.
+
+### S2 — Raw store
+Depends on: S1
+Red: `tests/test_raw.py` — save gzips to `<source>/<sha[:2]>/<sha>.gz` and writes a `raw_response` row; identical bodies share one blob but get two rows; a stream > threshold (threshold patched small) is stored as `<sha>.zip` uncompressed while hashing without reading fully into memory; `open(raw_id)` round-trips; prune keeps newest N per bulk dataset, sets `pruned_at`, deletes blobs, leaves non-bulk untouched; `--dry-run` deletes nothing.
+Green: `raw.py`, `usfin raw prune` (How › Raw store).
+Run: `uv run usfin raw prune --dry-run` on the empty store (prints 0 candidates).
+Done when: C1 storage half and C17 prune half covered.
+
+### S3 — Rate limiter and HTTP client
+Depends on: S2
+Red: `tests/test_ratelimit.py` — token bucket with fake clock: 8 rps host never exceeds 8 grants in any 1 s window across 4 threads; `www.sec.gov` and `data.sec.gov` share a bucket. `tests/test_http.py` (respx) — every response incl. 500/404 archived before return; 429 with `Retry-After` retried and honoured; 5 failures → error; SEC host without `SEC_USER_AGENT` raises `ConfigError` with zero requests sent; SEC UA header sent when set; non-SEC hosts get the usfin UA; SEC 403 sets the block window and later SEC calls raise `SecBlocked` without sending.
+Green: `ratelimit.py`, `http.py`, `config/hosts.yaml` (How › HTTP).
+Run: `uv run usfin http get https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny?page%5Bsize%5D=1` prints status, raw_id, bytes.
+Done when: C5 covered by tests.
+
+### S4 — Calendars
+Depends on: S0
+Red: `tests/test_calendars.py` — 2026-10-12: federal False, bond False, nyse True; 2026-04-03: federal True, bond False, nyse False; 2026-11-11 Veterans Day: federal False, nyse True; weekend False everywhere; `calendars.yaml` overrides add a closure and an opening; `prev_day/next_day/days_back`.
+Green: `calendars.py`, `config/calendars.yaml` (How › Calendars).
+Run: `uv run usfin calendar 2026-10-12` and `… 2026-04-03` print the three verdicts.
+Done when: C6 day logic covered.
+
+### S5 — Job runner, run log, watermarks
+Depends on: S1, S2, S3
+Red: `tests/test_jobs.py` — a fake registered job: run records `job_run` ok with rows and before/after watermarks; a failure records `failed` + error and leaves that key's watermark; multi-key job where one key fails advances only the others; watermark dates capped at today; `usfin jobs` lists last run + watermarks; `run` ignores calendar; DB lock → failed run (or logged) without watermark change.
+Green: `jobs.py` (registry, runner, watermark API), `usfin run`, `usfin jobs` (How › Jobs).
+Run: `uv run usfin run _demo` (a no-network demo job registered only when `USFIN_DEMO=1`) then `uv run usfin jobs`.
+Done when: C7 failure/resume covered.
+
+### S6 — Reparse and chaining
+Depends on: S5
+Red: `tests/test_reparse.py` — reparse selects raw rows by the job's parser datasets in `fetched_at` order with an HTTP transport that fails on any request; `--since` filters; pruned rows skipped with warning; a versioned job's derived rows are deleted by `raw_id` and replayed; `then:` chains run after success only, each with its own `job_run` (trigger `chained`).
+Green: reparse + chaining in `jobs.py`, `usfin reparse` (How › Jobs).
+Run: `uv run usfin reparse _demo` with `USFIN_DEMO=1`.
+Done when: C1 reparse half covered.
+
+### S7 — Fiscal Data client
+Depends on: S3
+Red: `tests/test_fiscal_client.py` with recorded fixtures (`tests/fixtures/fiscal/`, two pages of a real response trimmed): filter/sort/page[size] URL with encoded brackets, no `fields=`; page loop to `total-pages`; casting per `dataTypes` incl. `CURRENCY0`, `YEAR`, `"null"`.
+Green: `sources/fiscal.py` client + caster (How › Treasury Fiscal Data).
+Run: `uv run usfin fd probe debt_to_penny --since 2026-09-01` prints row count, columns, types.
+Done when: casting matches the type map for every type seen in the six datasets' fixtures.
+
+### S8 — Fiscal Data registry job
+Depends on: S6, S7
+Red: `tests/test_fiscal_job.py` — table `fd_<name>` created from dataTypes with registry pk; second run with the same fixtures leaves tables identical (C2); a revised value inside the 10-day overlap is updated (C3); `auctions` uses `auction_date`; an extra column in a later response triggers `ALTER TABLE ADD COLUMN` (alert hook stubbed until S9) (C16); one dataset 500 → others committed, that key's watermark unchanged (C7); reparse rebuilds identical tables (C1).
+Green: `config/fiscal_data.yaml` (six entries; pk columns confirmed against live responses and recorded here), job `fiscal`.
+Run: `uv run usfin run fiscal` (live, full backfill), then again — second run prints 0 changed rows; `uv run usfin jobs`.
+Done when: C2/C3/C16 for Fiscal Data covered; live backfill row counts per dataset recorded in the row.
+
+### S9 — Alerts
+Depends on: S8
+Red: `tests/test_alerts.py` — `zero_new_rows` fires only on a due day with nothing after `watermark_before`; `stale_watermark(n)`; `value_jump` flags; `row_count_swing` ±2%; dedupe per (job, rule, subject, day); webhook POST via respx and failure tolerated; `usfin alerts`, `ack`; `schema_drift` from S8 now lands as an alert.
+Green: `alerts.py`, `migrations` for `alert` if not in S1, rules wired after every job, `config/schedule.yaml` due-day rules for `fiscal` (How › Alerts).
+Run: `uv run usfin run fiscal && uv run usfin alerts --all`.
+Done when: C8 rules covered.
+
+### S10 — Scheduler and `usfin serve` (API only)
+Depends on: S4, S9
+Red: `tests/test_scheduler.py` — cron entries from `schedule.yaml` in America/New_York; guard records `skipped` on non-calendar days; single worker, coalesce, misfire 3600; catch-up with a fake clock runs a job once whose due fire was missed; `POST /api/jobs/{job}/run` enqueues (not in request thread); `usfin schedule` prints next 5 fires.
+Green: `scheduler.py`, minimal `web/app.py` (health + run endpoint), `usfin serve`, `usfin schedule` (How › Scheduler).
+Run: `uv run usfin serve` in background, `curl -XPOST 127.0.0.1:8660/api/jobs/fiscal/run`, watch `usfin jobs`; stop server.
+Done when: C6 scheduling and C7 catch-up covered.
+
+### S11 — UI shell: jobs and alerts pages
+Depends on: S10
+Red: `tests/test_web_jobs.py` (TestClient) — `/` lists every registered job with last run, status, watermarks, run-now form posting to the API; `/alerts` lists open alerts, ack works; `?format=csv` on both; "database busy" page when lock wait exceeded.
+Green: templates, `style.css` (light/dark tokens), CSV helper (How › Web UI).
+Run: `uv run usfin serve`, `curl -s 127.0.0.1:8660/ | head`, `curl -s '127.0.0.1:8660/alerts?format=csv'`.
+Done when: C11 jobs/alerts part covered.
+
+### S12 — TreasuryDirect job
+Depends on: S9
+Red: `tests/test_treasurydirect.py` — fixtures: announced (incl. already-auctioned rows with blanks), auctioned, a 2010 `search` result and a current one: field map gives identical typed columns; `T00:00:00` → DATE, `""` → NULL; announced never lowers status or blanks results; unknown key → payload + `schema_drift`; window logic picks `auctioned&days=7` vs camelCase `search`; idempotent re-run.
+Green: `sources/treasurydirect.py`, job `treasurydirect`, schedule entry 14:00 bond (How › TreasuryDirect).
+Run: `uv run usfin run treasurydirect` live; query `tsy_security` counts by status.
+Done when: C2/C3/C16 for TreasuryDirect covered.
+
+### S13 — TreasuryDirect backfill
+Depends on: S12
+Red: `tests/test_td_backfill.py` — monthly windows generated from `--from` to today; each window one `search` request with camelCase params; resumable (skips windows already fetched).
+Green: `usfin td backfill`.
+Run: probe the earliest date live (record it in How › TreasuryDirect), then `uv run usfin td backfill --from <earliest>`; report rows and time.
+Done when: full auction history loaded; earliest date recorded in the plan.
+
+### S14 — Auction cross-check
+Depends on: S8, S12
+Red: `tests/test_auction_xcheck.py` — matching rows → no alert; a yield or offering difference → exactly one `auction_mismatch` per (cusip, auction_date, day); rows only on one side are counted, not alerted.
+Green: job `auction_xcheck`, chained after `fiscal`.
+Run: `uv run usfin run fiscal` (chain runs) and `uv run usfin alerts`.
+Done when: C15 covered; live mismatch count recorded.
+
+### S15 — BLS client and series config
+Depends on: S5
+Red: `tests/test_bls_client.py` — v2 request body with key + catalog; v1 without key (no catalog); response parse to (series, year, period, value, footnotes); `bls validate` flags an unknown ID.
+Green: `sources/bls.py` client, `config/bls.yaml` (seven series, FRED IDs, thresholds), `bls_series` migration, `usfin bls validate` (How › BLS).
+Run: `uv run usfin bls validate` live (keyless v1 if no key).
+Done when: all seven IDs validated live, or a wrong one corrected in the plan.
+
+### S16 — BLS versioned observations
+Depends on: S6, S15
+Red: `tests/test_bls_versions.py` — first fetch inserts rows with `first_seen_at` = raw fetched_at; identical refetch inserts nothing (C2); revised value inserts a new version; value differing only beyond published decimals inserts nothing; `bls_as_of(ts)` and date-means-23:59:59-ET semantics (C4); reparse deletes by raw_id and replays to an identical table.
+Green: `bls_observation` migration, job `bls` (current + prior year), `bls_as_of` macro, schedule entry 09:00 federal.
+Run: `uv run usfin run bls` twice; second inserts 0; query `bls_as_of(now())` for CPI.
+Done when: C4 BLS half covered.
+
+### S17 — BLS release calendar and retry
+Depends on: S10, S16
+Red: `tests/test_bls_calendar.py` — VEVENT-only parsing with `DTSTART;TZID=US-Eastern:`; release names mapped to series; no future dates within 30 days → `calendar_stale`; on a release day with the period absent, a one-shot `bls_retry` DateTrigger is (re)scheduled at +10 min (+15 without key) until 12:00 ET, then `stale_watermark`; due days = release days.
+Green: `sources/bls_calendar.py`, job `bls_calendar`, retry wiring in `scheduler.py`.
+Run: `uv run usfin run bls_calendar` live; `uv run usfin bls releases --next 5`.
+Done when: the iCal URL and release-name mapping are recorded in How › BLS.
+
+### S18 — ALFRED backfill
+Depends on: S16
+Red: `tests/test_alfred.py` — fixture vintages become `source='alfred'` rows with `first_seen_at` = realtime_start 00:00 ET; only vintages before the first BLS raw fetch; rounding to the series' decimals; reparse replays ALFRED first then BLS.
+Green: `sources/alfred.py`, `usfin bls alfred-backfill` (blocks with a clear message without `FRED_API_KEY`).
+Run: `uv run usfin bls alfred-backfill` live (needs `FRED_API_KEY`); `bls_as_of('2020-06-01')` for UNRATE shows the first-published April 2020 value.
+Done when: C4 historic vintages available; blocked if no key.
+
+### S19 — EDGAR tickers and ticker_norm
+Depends on: S6
+Red: `tests/test_edgar_tickers.py` — fixture → `edgar_company` rows; `updated_at` changes only on value change; pair missing from a later file → `active=false`; job refuses without `SEC_USER_AGENT` (no request). `tests/test_ticker_norm.py` — `BRK.B/BRK-B/BRK/B`→`BRK.B`, `ABR$D/ABR-PD`→`ABR.PD`, `AAC.U/AAC-U`→`AAC.U`.
+Green: `sources/edgar/tickers.py`, `ticker_norm` in a shared module, job `edgar_tickers`, schedule 07:15 any.
+Run: `uv run usfin run edgar_tickers` live; count rows; `usfin edgar company AAPL`.
+Done when: C10 normalization covered; C5 UA guard exercised live.
+
+### S20 — EDGAR submissions
+Depends on: S19
+Red: `tests/test_edgar_submissions.py` — columnar `filings.recent` → `edgar_filing`; `filings.files[]` pages followed; `source` precedence fills NULLs never blanks; idempotent.
+Green: `sources/edgar/submissions.py`, `edgar_filing` + `edgar_filing_party` migration, job `edgar_submissions` (drains `pending_doc` kind `submissions`; for now also `usfin edgar submissions --cik`).
+Run: `uv run usfin edgar submissions --cik 320193` live (Apple) and a heavy filer with paged files; counts.
+Done when: paged history verified live.
+
+### S21 — EDGAR companyfacts
+Depends on: S20
+Red: `tests/test_edgar_companyfacts.py` — fixture → `xbrl_fact` us-gaap + dei only; instant facts `period_start = period_end`, `is_instant`; restated value under a new accn is a separate row; `xbrl_as_of(d)`; idempotent.
+Green: `sources/edgar/companyfacts.py`, migration, job `edgar_companyfacts`, `usfin edgar facts --cik`.
+Run: `uv run usfin edgar facts --cik 320193` live; Revenue rows as of two dates differ only by filings.
+Done when: C4 XBRL half covered.
+
+### S22 — EDGAR feed and document queue
+Depends on: S10, S21
+Red: `tests/test_edgar_feed.py` — fixture Atom pages: entries grouped by accession, parties stored per role, `edgar_filing.cik` precedence; paging stops at watermark or 10 pages; `pending_doc` gets the right kinds (10-K/10-Q any filer, 8-K watchlist only, Form 4, new + legacy 13D/G names); chain drains submissions/companyfacts deduped by CIK; SEC block → skipped.
+Green: `sources/edgar/feed.py`, `pending_doc` migration, `config/edgar.yaml`, job `edgar_feed` with chain, schedule every 15 min 06–22 federal.
+Run: `uv run usfin run edgar_feed` live; counts of filings, parties, pending by kind.
+Done when: feed half of C14 covered.
+
+### S23 — EDGAR daily-index reconcile
+Depends on: S22
+Red: `tests/test_edgar_dailyindex.py` — `master.idx` fixture parse; window from max(watermark−7d, today−7d) over federal days; 404 for today is not an error; every accession once in `edgar_filing`, all CIKs in parties; missing Form 4/13D/G enqueued.
+Green: `sources/edgar/dailyindex.py`, job `edgar_reconcile` (chain form4, sched13), schedule 23:30 federal.
+Run: `uv run usfin run edgar_reconcile` live; compare one day's idx accession count to `edgar_filing`.
+Done when: C14 covered (live day matches exactly).
+
+### S24 — Form 4
+Depends on: S22
+Red: `tests/test_form4.py` — recorded `index.json` + ownership XML fixtures (one non-derivative, one derivative, one amendment) → expected `insider_txn` rows; idempotent.
+Green: `sources/edgar/form4.py`, migration, job `edgar_form4` draining `form4`.
+Run: `uv run usfin run edgar_form4` live after a feed run; rows parsed vs pending drained.
+Done when: C13 Form 4 half covered.
+
+### S25 — Schedule 13D/G
+Depends on: S22
+Red: `tests/test_sched13.py` — recorded XML fixtures for 13D and 13G (incl. a reporting person without CIK) → `ownership_stake` rows with `person_seq`; pre-XML filing skipped and counted.
+Green: `sources/edgar/sched13.py`, migration, job `edgar_sched13`; XML element names recorded in How › SEC EDGAR.
+Run: `uv run usfin run edgar_sched13` live.
+Done when: C13 13D/G half covered.
+
+### S26 — EDGAR bulk backfill
+Depends on: S21, S2
+Red: `tests/test_edgar_bulk.py` — a small fixture ZIP (2 members each) streams to raw as `.zip`; members parsed in place with the per-CIK parsers; `edgar_bulk_member` CRCs stored; `--limit`, `--cik`.
+Green: `sources/edgar/bulk.py`, `usfin edgar backfill {submissions|companyfacts}`.
+Run: live download of both ZIPs, `--limit 200` each; record download sizes and parse rate.
+Done when: C17 streaming half covered.
+
+### S27 — Weekly bulk reconcile and prune
+Depends on: S26
+Red: `tests/test_edgar_bulk_reconcile.py` — second ZIP with one changed member → only that member reparsed; prune keeps 2 per dataset after the job.
+Green: job `edgar_bulk`, schedule Sun 03:00 any.
+Run: `uv run usfin run edgar_bulk` live with `--limit` env cap; then the **full** companyfacts + submissions load once — record time and DB size in README and here.
+Done when: C17 covered; full-load numbers recorded (or the limit reported if this Mac can't).
+
+### S28 — Frames and concept map
+Depends on: S21
+Red: `tests/test_frames.py` — frames fixture cached in `frames_cache` with TTL 24 h (fake clock); never touches `xbrl_fact`; `concepts.yaml` picks the first reported tag and reports which.
+Green: `sources/edgar/frames.py`, `sources/edgar/concepts.py`, `config/concepts.yaml`, `usfin edgar frame`, `usfin edgar screen revenue CY2025Q2`.
+Run: both commands live.
+Done when: screen output shows tag used per company.
+
+### S29 — Nasdaq Trader snapshot
+Depends on: S9
+Red: `tests/test_nasdaq_snapshot.py` — both fixture files parse with the per-file column map; trailer → snapshot_at; missing trailer rejected + alert; test issues dropped; idempotent (PK file, snapshot_at, symbol).
+Green: `sources/nasdaqtrader.py` snapshot part, migration, job `symbols`, schedule 07:00 nyse.
+Run: `uv run usfin run symbols` live; counts per file.
+Done when: C9 trailer half covered.
+
+### S30 — Symbol history diff
+Depends on: S29
+Red: `tests/test_symbol_history.py` — first snapshot opens rows, no swing check; add/remove/rename/ETF change produce correct type-2 rows; ±2% swing stores snapshot, skips diff, alerts.
+Green: diff in `sources/nasdaqtrader.py`.
+Run: `uv run usfin run symbols` twice live (second makes no history changes).
+Done when: C9 covered.
+
+### S31 — Ticker join and unmatched list
+Depends on: S19, S30
+Red: `tests/test_symbol_match.py` — view `symbol_edgar_match` joins on `ticker_norm` incl. class and preferred forms; unmatched listed; inactive EDGAR pairs ignored.
+Green: view migration, `usfin symbols unmatched`.
+Run: live; record match rate.
+Done when: C10 covered.
+
+### S32 — UI: series browser
+Depends on: S11, S14, S16
+Red: `tests/test_web_series.py` — `/series` lists BLS series, Fiscal datasets, auctions; series page renders table + SVG path; `?as_of=` changes BLS values; CSV export.
+Green: series templates and SVG helper.
+Run: `uv run usfin serve`; fetch `/series/bls/CUSR0000SA0?as_of=2026-01-01` and a Fiscal page.
+Done when: C11 series part covered.
+
+### S33 — UI: EDGAR company and screen
+Depends on: S28, S32
+Red: `tests/test_web_edgar.py` — `/edgar/{cik}` shows filings and key facts by concept; `/screen` concept × period across companies with tag used; CSV.
+Green: templates.
+Run: serve; open `/edgar/320193` and `/screen?concept=revenue&period=CY2025Q2`.
+Done when: C11 EDGAR part covered.
+
+### S34 — UI: unmatched symbols
+Depends on: S31, S32
+Red: `tests/test_web_symbols.py` — `/symbols/unmatched` lists them with CSV; every table page in the app answers `?format=csv` (one parametrized test over all routes).
+Green: template.
+Run: serve; fetch page and CSV.
+Done when: C11 fully covered.
+
+### S35 — Ops: doctor, launchd, README, live smoke
+Depends on: S33, S34
+Red: `tests/test_doctor.py` — reports each env var set/unset (never values), config present, DB lock state (with a second process), raw size, free disk.
+Green: `doctor.py`, `deploy/com.tuntun.usfin.serve.plist.example`, README (setup, `.env`, backfills, schedule, analysis access between jobs, bulk numbers).
+Run: `uv run usfin doctor`; `plutil -lint deploy/*.plist.example`; `usfin serve` for one scheduled feed fire, then `usfin jobs`.
+Done when: C18 covered; every job has at least one ok live run.
+
+## Progress
+
+| Slice | Status | Date | Commit | Tests | Run showed |
+|-------|--------|------|--------|-------|------------|
+| S0 Scaffold | todo | | | | |
+| S1 Store, migrations, lock wait | todo | | | | |
+| S2 Raw store | todo | | | | |
+| S3 Rate limiter and HTTP client | todo | | | | |
+| S4 Calendars | todo | | | | |
+| S5 Job runner, run log, watermarks | todo | | | | |
+| S6 Reparse and chaining | todo | | | | |
+| S7 Fiscal Data client | todo | | | | |
+| S8 Fiscal Data registry job | todo | | | | |
+| S9 Alerts | todo | | | | |
+| S10 Scheduler and usfin serve | todo | | | | |
+| S11 UI shell: jobs and alerts | todo | | | | |
+| S12 TreasuryDirect job | todo | | | | |
+| S13 TreasuryDirect backfill | todo | | | | |
+| S14 Auction cross-check | todo | | | | |
+| S15 BLS client and series config | todo | | | | |
+| S16 BLS versioned observations | todo | | | | |
+| S17 BLS release calendar and retry | todo | | | | |
+| S18 ALFRED backfill | todo | | | | |
+| S19 EDGAR tickers and ticker_norm | todo | | | | |
+| S20 EDGAR submissions | todo | | | | |
+| S21 EDGAR companyfacts | todo | | | | |
+| S22 EDGAR feed and document queue | todo | | | | |
+| S23 EDGAR daily-index reconcile | todo | | | | |
+| S24 Form 4 | todo | | | | |
+| S25 Schedule 13D/G | todo | | | | |
+| S26 EDGAR bulk backfill | todo | | | | |
+| S27 Weekly bulk reconcile and prune | todo | | | | |
+| S28 Frames and concept map | todo | | | | |
+| S29 Nasdaq Trader snapshot | todo | | | | |
+| S30 Symbol history diff | todo | | | | |
+| S31 Ticker join and unmatched list | todo | | | | |
+| S32 UI: series browser | todo | | | | |
+| S33 UI: EDGAR company and screen | todo | | | | |
+| S34 UI: unmatched symbols | todo | | | | |
+| S35 Ops: doctor, launchd, README, live smoke | todo | | | | |
