@@ -48,3 +48,9 @@ jobs:
         # without an auction (since 2023 at most 1), and some bond days have none, so no
         # zero_new_rows
         stale_watermark: {n: 3}
+  bls:
+    cron: "0 9 * * *"              # BLS releases at 08:30 ET
+    calendar: federal
+    # due days are BLS release days (S17, from the release calendar); until then none, so no
+    # zero_new_rows or stale_watermark
+    due: none

@@ -378,7 +378,16 @@ def bls_validate() -> None:
             raise typer.Exit(1) from None
         checks = bls.validate(doc, list(series))
         bls.upsert_series(con, [series[c.series_id] for c in checks if c.ok])
-    typer.echo(f"raw_id: {raw_id}")
+        # the response is the `bls` job's raw dataset: store its versions too, so the job and
+        # `usfin reparse bls` agree on when each value was first seen
+        con.execute("BEGIN TRANSACTION")
+        try:
+            stored = bls.store_observations(con, raw_id, raw_dir=settings.raw_dir, config=series)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+    typer.echo(f"raw_id: {raw_id} ({stored.rows} new observation versions)")
     for c in checks:
         if c.ok:
             latest = f"{c.latest[0]} {c.latest[1]}"

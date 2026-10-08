@@ -10,26 +10,39 @@ writes `-` for an observation it could not publish (2025 M10, footnote X: the la
 appropriations), parsed as `None`. Empty footnote objects (`[{}]`) are dropped.
 
 Titles, seasonality, units and decimals come from `config/bls.yaml` and are written to table
-`bls_series` by `usfin bls validate` (and later the `bls` job).
+`bls_series` by `usfin bls validate` and the `bls` job.
+
+Job `bls` (09:00 ET, federal days): one query for every configured series, this year and last
+(C3's overlap), archived as `bls_timeseries`; watermark key per series = its latest published
+period (`YYYY-Mnn`, never moved back). Its keys are the series IDs but one request serves them
+all: the first key's fetch posts and every key reuses that raw response (`ctx.memo`), so a failed
+request is sent once and fails every key. `store_observations` versions `bls_observation` (C4): a
+row is written only when the value (compared at the series' published `decimals`) or the footnotes
+differ from the latest row for that period as of the response's `fetched_at`, which becomes the
+row's `first_seen_at`. A "-" period is stored with `value` NULL. Every `bls_timeseries` response is
+parsed the same way — `bls validate`'s included — so `usfin reparse bls` rebuilds the same table;
+a response that is not HTTP 200 + `REQUEST_SUCCEEDED` stores nothing.
 """
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import yaml
 
-from usfin import http, jobs
+from usfin import http, jobs, raw
 from usfin.settings import ConfigError
 
 V1_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 V2_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
 SOURCE = "bls"
 RAW_DATASET = "bls_timeseries"
+TABLE = "bls_observation"
 LIMITS = {"v1": (25, 10), "v2": (50, 20)}
 """(series per query, years per query) for each API version."""
 _OK = "REQUEST_SUCCEEDED"
@@ -223,6 +236,168 @@ def upsert_series(con: duckdb.DuckDBPyConnection, series: Sequence[Series]) -> i
         )
         changed += 1
     return changed
+
+
+# --- versioned observations (job `bls`) ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Stored:
+    """What `store_observations` did with one raw response."""
+
+    rows: int
+    latest: dict[str, str]
+    """Series ID -> its latest published period in the response, `YYYY-Mnn`."""
+
+
+def _footnotes_json(notes: Sequence[Mapping[str, str]]) -> str:
+    return json.dumps([dict(n) for n in notes], sort_keys=True, separators=(",", ":"))
+
+
+def _same_value(a: Decimal | None, b: Decimal | None, decimals: int | None) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    if decimals is None:
+        return a == b
+    quantum = Decimal(1).scaleb(-decimals)
+    return a.quantize(quantum, ROUND_HALF_EVEN) == b.quantize(quantum, ROUND_HALF_EVEN)
+
+
+def _decimals(con: duckdb.DuckDBPyConnection, config: Mapping[str, Series]) -> dict[str, int]:
+    """Published decimals per series: config first, else what `bls_series` recorded."""
+    out = {
+        sid: int(d)
+        for sid, d in con.execute("SELECT series_id, decimals FROM bls_series").fetchall()
+    }
+    return out | {sid: s.decimals for sid, s in config.items()}
+
+
+def _read(con: duckdb.DuckDBPyConnection, raw_id: int, raw_dir) -> dict[str, Any] | None:
+    """The response body, or None when it carries no data (non-200 or not processed)."""
+    status = con.execute("SELECT http_status FROM raw_response WHERE id = ?", [raw_id]).fetchone()
+    if status is None:
+        raise LookupError(f"raw_response {raw_id} does not exist")
+    if status[0] != 200:
+        return None
+    with raw.open(con, raw_id, raw_dir=raw_dir) as fh:
+        try:
+            doc = json.loads(fh.read())
+        except ValueError:
+            return None
+    return doc if isinstance(doc, dict) and doc.get("status") == _OK else None
+
+
+def store_observations(
+    con: duckdb.DuckDBPyConnection,
+    raw_id: int,
+    *,
+    raw_dir,
+    config: Mapping[str, Series],
+) -> Stored:
+    """Write the new versions one `bls_timeseries` response carries; return what it did.
+
+    The caller owns the transaction. Versions are compared with the latest row for each period
+    first seen at or before this response's `fetched_at` (so a reparse replaying responses in
+    order rebuilds the same history).
+    """
+    doc = _read(con, raw_id, raw_dir)
+    if doc is None:
+        return Stored(0, {})
+    observations = parse(doc)
+    upsert_series(
+        con, [config[sid] for sid in sorted({o.series_id for o in observations} & set(config))]
+    )
+    fetched_at = con.execute(
+        "SELECT fetched_at FROM raw_response WHERE id = ?", [raw_id]
+    ).fetchone()[0]
+    ids = sorted({o.series_id for o in observations})
+    known: dict[tuple[str, int, str], tuple[Decimal | None, str]] = {}
+    if ids:
+        for sid, year, period, value, notes in con.execute(
+            f"SELECT series_id, year, period, value, footnotes FROM {TABLE}"
+            f" WHERE series_id IN ({', '.join('?' for _ in ids)}) AND first_seen_at <= ?"
+            " QUALIFY row_number() OVER (PARTITION BY series_id, year, period"
+            " ORDER BY first_seen_at DESC) = 1",
+            [*ids, fetched_at],
+        ).fetchall():
+            known[(sid, year, period)] = (value, notes)
+    decimals = _decimals(con, config)
+    new: list[list[Any]] = []
+    latest: dict[str, str] = {}
+    for o in observations:
+        if o.value is not None:
+            period = f"{o.year}-{o.period}"
+            latest[o.series_id] = max(latest.get(o.series_id, period), period)
+        notes = _footnotes_json(o.footnotes)
+        old = known.get((o.series_id, o.year, o.period))
+        if old is not None and (
+            _same_value(o.value, old[0], decimals.get(o.series_id))
+            and json.loads(old[1]) == json.loads(notes)
+        ):
+            continue
+        known[(o.series_id, o.year, o.period)] = (o.value, notes)
+        new.append([o.series_id, o.year, o.period, o.value, notes, fetched_at, raw_id])
+    if new:
+        con.executemany(
+            f"INSERT INTO {TABLE} (series_id, year, period, value, footnotes, first_seen_at,"
+            " raw_id, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'bls')",
+            new,
+        )
+    return Stored(len(new), latest)
+
+
+def _keys(ctx: "jobs.JobContext") -> list[str]:
+    return list(load_series(ctx.settings.config_dir))
+
+
+def _fetch(ctx: "jobs.JobContext", key: str) -> list[int]:
+    """One query for every series, sent on the first key and reused by the others."""
+    got = ctx.memo.get("bls_raw_id")
+    if got is None:
+        series = list(load_series(ctx.settings.config_dir))
+        try:
+            got, _ = fetch(
+                ctx.client,
+                series,
+                ctx.today.year - 1,
+                ctx.today.year,
+                api_key=ctx.settings.bls_api_key,
+            )
+        except (http.HttpError, BlsError, ValueError) as exc:  # every key fails; sent once
+            got = exc
+        ctx.memo["bls_raw_id"] = got
+    if isinstance(got, Exception):
+        raise got
+    return [got]
+
+
+def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
+    done: dict[int, Stored] = ctx.memo.setdefault("bls_parsed", {})
+    rows = 0
+    if raw_id not in done:
+        done[raw_id] = store_observations(
+            ctx.con,
+            raw_id,
+            raw_dir=ctx.settings.raw_dir,
+            config=load_series(ctx.settings.config_dir),
+        )
+        rows = done[raw_id].rows
+    for sid, period in done[raw_id].latest.items():
+        current = ctx.watermarks.get(sid)
+        ctx.advance(sid, max(period, current) if current else period)
+    return rows
+
+
+JOB = jobs.REGISTRY.register(
+    jobs.Job(
+        name="bls",
+        keys=_keys,
+        fetch=_fetch,
+        parsers={RAW_DATASET: _parse},
+        versioned=(TABLE,),
+    )
+)
+"""All configured series in one query; versioned rows in `bls_observation`."""
 
 
 def _today() -> date:

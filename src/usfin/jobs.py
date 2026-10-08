@@ -115,6 +115,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.fiscal",
     "usfin.sources.treasurydirect",
     "usfin.sources.auction_xcheck",
+    "usfin.sources.bls",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
@@ -197,6 +198,8 @@ class JobContext:
     run_id: int | None
     watermarks: dict[str, str]
     transport: httpx.BaseTransport | None = None
+    memo: dict[str, Any] = field(default_factory=dict)
+    """Per-run scratch shared by fetch and parsers (e.g. one request serving every key)."""
     _proposed: dict[str, date | datetime | str] = field(default_factory=dict)
     _client: usfin_http.Client | None = None
 
