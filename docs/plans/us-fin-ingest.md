@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S8 done — next: S9
+Status: S9 done — next: S10
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -46,8 +46,8 @@ When this is done, these are true (each one is covered by at least one slice's t
 - **C7 Resume.** A failed run (or a failed key within a run) records the error, leaves that
   key's watermark unchanged, and the next run resumes from it. Missed runs while the Mac slept
   are caught up once on wake or startup.
-- **C8 Alerts.** After each job the rules run: zero new rows (no row dated after
-  `watermark_before`) on a due day, stale watermark, value jump past a per-series threshold,
+- **C8 Alerts.** After each job the rules run: zero new rows (no row dated after the watermark
+  before the job's first run that day — amended in S9) on a due day, stale watermark, value jump past a per-series threshold,
   row-count swing > ±2% on full-file snapshots, plus `calendar_stale`, `auction_mismatch`,
   `schema_drift`. Alerts land in an `alert` table (one per job, rule, subject and day), the UI,
   and an optional webhook.
@@ -376,6 +376,36 @@ federal day of the month; `bls` BLS release days only; `symbols` NYSE days; `edg
 days. An alert is inserted once per (job, rule, subject, raised_on) and POSTed as JSON to
 `ALERT_WEBHOOK_URL` if set (failure to post is logged, not fatal). `usfin alerts [--all]`,
 `usfin alerts ack <id>`.
+*(Amended in S9.)* `zero_new_rows` compares to the key's watermark **before the job's first run
+that New York day** (`alerts.day_baseline`), not the run's own `watermark_before`: with the latter
+every repeat run on a due day fires, since the first run already moved the watermark. A key with no
+such baseline (first load) skips `zero_new_rows`, `value_jump` and `row_count_swing`, so a backfill
+never floods alerts with history; `stale_watermark` needs only the current watermark. A job tells
+the rules where each key's rows live with `Job(…, observed={key: alerts.Observed(table,
+date_column, match, series, values, order, jump_match, snapshot)})` (or `observed(settings)`).
+`stale_watermark(n)` fires when more than `n` due days fall in (watermark, today];
+`value_jump(pct)` compares each row dated after the baseline with the previous row of its series
+(`|Δ|/|prev| > pct`, subject `<key>:<column>:<series>@<date>`); `row_count_swing(pct=2)` compares
+the newest snapshot (`snapshot=True`, grouped by `date_column`) with the previous one, only when
+the newest is after the baseline. `config/schedule.yaml` shape: `jobs: {<job>: {cron, calendar,
+due, alerts: {rule: params}, keys: {<key>: {due, <rule>: params | null}}}}`; `due` is a calendar
+name, `none`, or `{calendar, nth_of_month}`, default the job's calendar; unknown rules, bad due
+rules and missing `n`/`pct` are `ConfigError`. Rules run in `jobs._execute` after every recorded
+run (ok or failed); a rule error is logged and never changes the run. `fiscal` due days: DTS and
+Debt to the Penny every federal day, MTS the 8th federal day (`stale_watermark n: 1`), auctions /
+avg_interest_rates / rates_of_exchange none (irregular releases: no `zero_new_rows` or
+`stale_watermark`, `value_jump` still runs). Thresholds, set from the year to 2026-10 of real data:
+25 % default, `debt_to_penny` 5 %, `mts_table_1` 100 %. `fiscal_data.yaml` gains `series` (value_jump
+series columns; `rates_of_exchange` uses `country_currency_desc`, since `src_line_nbr` shifts between
+releases) and `jump_match` (`dts_operating_cash` checks only the TGA closing balance: the
+deposits/withdrawals rows are daily flows that move > 25 % on 9 days in 10). `fiscal.on_schema_drift`
+raises `schema_drift` (subject = dataset, detail `{table, columns}`) inside the parse's transaction.
+Alerts stored during a run (id above the run's starting max) are POSTed after the run with plain
+`httpx.post` (not the archiving client: a webhook reply is not source data), body `{id, job, rule,
+subject, detail, raised_on, raised_at}`. `usfin alerts` lists open alerts newest first, `--all`
+adds acknowledged ones, `usfin alerts ack <id>` is idempotent and exits 1 for an unknown id.
+`db_locked` is not raised yet: a run that cannot open the DB cannot write the `alert` table either
+(S5: no `job_run` row); the scheduler (S10) owns raising it once a session opens.
 
 **Treasury Fiscal Data.** Base `https://api.fiscaldata.treasury.gov/services/api/fiscal_service`
 (all six endpoint versions in the research doc verified by the review). `config/fiscal_data.yaml`
@@ -943,7 +973,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S6 Reparse and chaining | done | 2026-10-08 | af1bf5d | 19 new (test_reparse); suite 126 passed | On the real store (8 `_demo` raw rows from S5), `USFIN_DEMO=1 usfin reparse _demo` printed `_demo reparsed 8 raw responses, rows 24`, exit 0; `raw_response` (10), `job_run` (4), both watermarks and their `updated_at` unchanged, `demo_item` identical. After `DELETE FROM demo_item` the same command rebuilt all 6 rows. `--since 2026-10-08` reparsed 0 and `--since 2026-10-07` all 8: the blobs were fetched 2026-10-08 00:22 UTC = 10-07 ET, so `--since` reasons in New York dates. With another process holding the DB, `USFIN_LOCK_WAIT=1 usfin reparse _demo` exited 1 after ~1 s with `database busy — …`. Plan amended (Jobs): `Job.versioned` tables, one-transaction all-or-nothing reparse with `ReparseFailed`, `NetworkDisabled` transport, no `job_run` and no watermark move on reparse, pruned rows keep their derived history, depth-first chain run once per chain, failed child does not stop siblings, `usfin run` exits 1 if a chained run failed. |
 | S7 Fiscal Data client | done | 2026-10-08 | 8981c36 | 31 new (test_fiscal_client); suite 157 passed | `usfin fd probe debt_to_penny --since 2026-09-01` (live) printed 25 rows in 1 page, record_date 2026-09-01 .. 2026-10-06, 11 columns (`CURRENCY`→DECIMAL(24,4), `YEAR/QUARTER/MONTH/DAY/INTEGER`→BIGINT, `DATE`), exit 0 in ~3.5 s; `auctions` 48 rows with auction_date up to today 2026-10-08 while record_date reads 2026-10-13 (ahead, as planned) and today's auction has null results (the lookback picks them up); `mts_table_1 --since 2026-09-01` returned 0 rows, `total-pages: 0`, but full `dataTypes` (Sept MTS not out yet); an unknown name exits 2 listing the six. A one-off scan of the first 10 000 rows of every dataset from 1990 cast with no failure. Fixtures: 8 real responses (debt_to_penny 2 pages, the other five, MTS empty) recorded with the client's exact URLs; `auctions.json` lost only its unused `meta.labels`/`dataFormats`. No plan contradiction; How › Treasury Fiscal Data gains the client API, the registry YAML shape (endpoints now, pk in S8) and the `fd_probe` raw dataset. |
 | S8 Fiscal Data registry job | done | 2026-10-08 | 0ad6102 | 16 new (test_fiscal_job); suite 173 passed | Live full backfill on `data/usfin.duckdb` (`usfin run fiscal`, from 2000-01-01, 14 pages): `fiscal #7 ok rows 58575` in 19.7 s — `fd_dts_operating_cash` 16 674 (2005-10-03..2026-10-06), `fd_debt_to_penny` 6 718 (2000-01-03..2026-10-06), `fd_auctions` 7 894 (auction_date 2000-01-03..2026-10-08), `fd_avg_interest_rates` 5 025 (2001-01-31..2026-09-30), `fd_mts_table_1` 3 117 (2015-03-31..2026-08-31), `fd_rates_of_exchange` 19 147 (2001-03-31..2026-09-30). Second run `fiscal #8 ok rows 0` in 5.4 s (7 overlap requests). Watermarks: auctions 2026-10-07 (capped: the Mac read 20:52 ET on 10-07 and the feed already lists 2026-10-08 auctions with null results), dts/penny 2026-10-06, avg_rates/rates_of_exchange 2026-09-30, MTS 2026-08-31. `usfin reparse fiscal` replayed 14 raw responses with 0 changes in 1.5 s. After: `data/usfin.duckdb` 13.4 MB, `raw/` 2.4 MB (28 fiscal raw rows, 94 MB of JSON bodies; identical re-fetched pages share blobs). The first live run with per-row bound parameters took 97 s (reparse 72 s); staging through one JSON parameter fixed it and the tables were dropped and re-backfilled with the final code. Plan amended (Jobs: `parsers(settings)`; Treasury Fiscal Data: confirmed pks — `rates_of_exchange` needs `src_line_nbr` because upstream repeats rows —, JSON staging, `on_schema_drift` stub, `then: auction_xcheck` deferred to S14 since chaining a missing job would fail every run). |
-| S9 Alerts | todo | | | | |
+| S9 Alerts | done | 2026-10-08 | | 26 new (test_alerts); suite 199 passed | `usfin run fiscal` on `data/usfin.duckdb` at 21:01 ET on 10-07 printed `fiscal #9 ok rows 0` (5.5 s) and `usfin alerts --all` printed `no alerts` — correct: the day's first fiscal run was S8's backfill (#5, empty `watermark_before`), so no key had a baseline, and no watermark was stale (DTS/penny 10-06 is 1 federal day back, MTS 08-31 has 1 due day since). On a scratch copy of the real DB the rules then fired as designed: a simulated Fri 10-09 run with nothing new raised `zero_new_rows` and `stale_watermark` (3 due days > 2) for `dts_operating_cash` and `debt_to_penny` only; with the baseline a year back, `value_jump` raised 14 (9 rates_of_exchange, 5 mts_table_1, 0 for TGA/penny/avg rates) — among them the 2026-09-30 exchange-rate release, where some rows carry their neighbour's rate (Nepal-Rupee 151.46 → 1.771 ≈ NZD's rate, NZ-Dollar 1.767 → 0.881), an upstream error the rule exists for. No webhook configured, none sent. Plan amended (Alerts): `zero_new_rows` baseline is the watermark before the day's first run — the plan's `watermark_before` fires on every repeat run; first loads skip the baseline rules; `Job.observed`, `schedule.yaml` shape, fiscal due days and thresholds, `series`/`jump_match` in `fiscal_data.yaml` (`src_line_nbr` is no series key: 553 of 681 jumps > 10 % were line shifts); `db_locked` left to S10. |
 | S10 Scheduler and usfin serve | todo | | | | |
 | S11 UI shell: jobs and alerts | todo | | | | |
 | S12 TreasuryDirect job | todo | | | | |

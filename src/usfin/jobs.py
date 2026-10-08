@@ -11,6 +11,8 @@ manual runs ignore it and the scheduler guards scheduled ones.
 
 After an `ok` run, each job in `then` runs in turn (its own `job_run`, trigger `chained`, and
 its own chain); a failed run chains nothing, and a job runs at most once per chain.
+After every recorded run (ok or failed) the job's alert rules run (`usfin.alerts`) and new
+alerts go to the webhook; a rule error is logged and never changes the run's status.
 
 `reparse` rebuilds a job's normalized rows from stored raw responses with HTTP disabled: every
 unpruned `raw_response` whose dataset is in the job's parser map, in `fetched_at` order, in one
@@ -31,8 +33,8 @@ from zoneinfo import ZoneInfo
 import duckdb
 import httpx
 
+from usfin import alerts, store
 from usfin import http as usfin_http
-from usfin import store
 from usfin.settings import Settings, load_settings
 
 ET = ZoneInfo("America/New_York")
@@ -60,12 +62,21 @@ class Job:
     then: tuple[str, ...] = ()
     versioned: tuple[str, ...] = ()
     """Tables whose rows carry the `raw_id` they came from; reparse deletes and replays them."""
+    observed: (
+        Mapping[str, alerts.Observed] | Callable[[Settings], Mapping[str, alerts.Observed]] | None
+    ) = None
+    """`{key: Observed}` (or built from settings): where each key's rows live, for alert rules."""
 
     def key_list(self, ctx: "JobContext") -> list[str]:
         return list(self.keys(ctx) if callable(self.keys) else self.keys)
 
     def parser_map(self, settings: Settings) -> Mapping[str, Parser]:
         return self.parsers(settings) if callable(self.parsers) else self.parsers
+
+    def observed_map(self, settings: Settings) -> Mapping[str, alerts.Observed]:
+        if self.observed is None:
+            return {}
+        return self.observed(settings) if callable(self.observed) else self.observed
 
 
 class Registry:
@@ -235,6 +246,7 @@ def _run_key(ctx: JobContext, key: str) -> int:
 def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any]) -> RunResult:
     now: datetime = ctx_args["now"]
     before = get_watermarks(con, job.name)
+    first_alert = alerts.max_id(con)
     run_id = con.execute(
         "INSERT INTO job_run (job, started_at, status, trigger, watermark_before)"
         " VALUES (?, ?, 'running', ?, ?) RETURNING id",
@@ -275,6 +287,9 @@ def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any])
             error,
             run_id,
         ],
+    )
+    alerts.after_run(
+        con, job, settings=ctx.settings, today=ctx.today, now=now, since_id=first_alert
     )
     return RunResult(job.name, run_id, status, rows, error, key_errors)
 

@@ -27,7 +27,7 @@ from typing import Any
 
 import yaml
 
-from usfin import http, jobs, raw
+from usfin import alerts, http, jobs, raw
 from usfin.settings import ConfigError, Settings
 
 BASE = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service"
@@ -62,6 +62,10 @@ class Dataset:
     lookback_days: int = LOOKBACK_DAYS
     backfill_from: date = BACKFILL_FROM
     jump_fields: tuple[str, ...] = ()
+    series: tuple[str, ...] = ()
+    """Columns naming one series for value_jump; default: pk minus date_field."""
+    jump_match: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """Column -> values limiting value_jump to some rows (e.g. balances, not daily flows)."""
 
     @property
     def raw_dataset(self) -> str:
@@ -106,8 +110,13 @@ def load_datasets(config_dir: Path | str) -> dict[str, Dataset]:
                     backfill if isinstance(backfill, date) else date.fromisoformat(str(backfill))
                 ),
                 jump_fields=tuple(str(c) for c in entry.get("jump_fields") or ()),
+                series=tuple(str(c) for c in entry.get("series") or ()),
+                jump_match={
+                    str(col): tuple(str(v) for v in values)
+                    for col, values in (entry.get("jump_match") or {}).items()
+                },
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, AttributeError) as exc:
             raise ConfigError(f"{path}: dataset {name!r}: {exc}") from None
     return out
 
@@ -208,14 +217,21 @@ def cast_page(doc: Mapping[str, Any], *, raw_id: int | None = None, number: int 
 # --- job `fiscal` -------------------------------------------------------------------------------
 
 
-def _log_schema_drift(ctx: "jobs.JobContext", dataset: str, columns: Mapping[str, str]) -> None:
+def _raise_schema_drift(ctx: "jobs.JobContext", dataset: str, columns: Mapping[str, str]) -> None:
     log.warning("schema_drift: %s gained columns %s", dataset, dict(columns))
+    alerts.raise_alert(
+        ctx.con,
+        job=ctx.job.name,
+        rule="schema_drift",
+        subject=dataset,
+        detail={"table": f"fd_{dataset}", "columns": dict(columns)},
+        now=ctx.now,
+    )
 
 
-on_schema_drift: Callable[["jobs.JobContext", str, Mapping[str, str]], None] = _log_schema_drift
-"""Called with (ctx, dataset name, {column: dataType}) after new columns were added.
-
-A stub that logs until the alert framework (S9) points it at the `schema_drift` alert rule."""
+on_schema_drift: Callable[["jobs.JobContext", str, Mapping[str, str]], None] = _raise_schema_drift
+"""Called with (ctx, dataset name, {column: dataType}) after new columns were added; raises a
+`schema_drift` alert (subject = dataset name) in the parse's transaction."""
 
 
 def _q(name: str) -> str:
@@ -338,5 +354,22 @@ def _parsers(settings: Settings) -> dict[str, "jobs.Parser"]:
     return {ds.raw_dataset: _parse for ds in load_datasets(settings.config_dir).values()}
 
 
-JOB = jobs.REGISTRY.register(jobs.Job(name="fiscal", keys=_keys, fetch=_fetch, parsers=_parsers))
+def _observed(settings: Settings) -> dict[str, alerts.Observed]:
+    """Alert rules' view of each registry entry: its table, date field, series and jump fields."""
+    out = {}
+    for ds in load_datasets(settings.config_dir).values():
+        out[ds.name] = alerts.Observed(
+            table=ds.table,
+            date_column=ds.date_field,
+            series=ds.series or tuple(c for c in ds.pk if c != ds.date_field),
+            values=ds.jump_fields,
+            order=ds.pk,
+            jump_match=ds.jump_match,
+        )
+    return out
+
+
+JOB = jobs.REGISTRY.register(
+    jobs.Job(name="fiscal", keys=_keys, fetch=_fetch, parsers=_parsers, observed=_observed)
+)
 """Every registry entry, one watermark key each. S14 adds `then: (auction_xcheck,)`."""

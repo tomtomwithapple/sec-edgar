@@ -2,7 +2,9 @@
 # Each entry: name (table and raw dataset fd_<name>), endpoint (under
 # https://api.fiscaldata.treasury.gov/services/api/fiscal_service), date_field (default
 # record_date), lookback_days (default 10), backfill_from (default 2000-01-01), pk (the table's
-# primary key; required by job `fiscal`) and jump_fields (value_jump alert candidates, S9).
+# primary key; required by job `fiscal`), jump_fields (columns the value_jump alert checks),
+# series (columns naming one series for value_jump; default pk minus date_field) and jump_match
+# (column -> values: value_jump looks only at those rows). Thresholds live in schedule.yaml.
 # Every pk was confirmed on 2026-10-08 against the full live history from 2000-01-01: non-null in
 # every row and unique.
 datasets:
@@ -10,6 +12,10 @@ datasets:
     endpoint: v1/accounting/dts/operating_cash_balance
     pk: [record_date, account_type]
     jump_fields: [open_today_bal]
+    # deposits/withdrawals rows are daily flows (>25% day-to-day on 9 days in 10); the balance
+    # moved at most 20% a day over the year to 2026-10
+    jump_match:
+      account_type: ["Treasury General Account (TGA) Closing Balance"]
   - name: debt_to_penny
     endpoint: v2/accounting/od/debt_to_penny
     pk: [record_date]
@@ -33,3 +39,4 @@ datasets:
     endpoint: v1/accounting/od/rates_of_exchange
     pk: [record_date, src_line_nbr]
     jump_fields: [exchange_rate]
+    series: [country_currency_desc]   # src_line_nbr shifts between releases

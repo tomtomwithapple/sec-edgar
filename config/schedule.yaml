@@ -1,1 +1,37 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# Schedule, due days and alert rules per job (docs/plans/us-fin-ingest.md, How > Alerts and
+# How > Scheduler). Each source slice adds its own job here.
+#
+#   <job>:
+#     cron: "m h dom mon dow"      # America/New_York; read by the scheduler (S10)
+#     calendar: federal|bond|nyse|any
+#     due: <rule>                  # due days for alert rules: a calendar name, none, or
+#                                  # {calendar: federal, nth_of_month: 8}; default = calendar
+#     alerts:                      # rules for every watermark key
+#       zero_new_rows: {}          # due day and no row dated after the day's first watermark
+#       stale_watermark: {n: 2}    # more than n due days after the watermark
+#       value_jump: {pct: 25}      # a new row moved > pct % from the series' previous row
+#       row_count_swing: {pct: 2}  # full-file snapshots only
+#     keys:                        # per-key overrides: due, or a rule's params (null = off)
+#       <key>: {due: none, value_jump: {pct: 50}}
+jobs:
+  fiscal:
+    cron: "0 17 * * *"
+    calendar: federal
+    due: federal                   # DTS and Debt to the Penny publish every federal day
+    alerts:
+      zero_new_rows: {}
+      stale_watermark: {n: 2}
+      value_jump: {pct: 25}
+    keys:
+      debt_to_penny:
+        value_jump: {pct: 5}       # never moved 10% in a day over the year to 2026-10
+      mts_table_1:
+        due: {calendar: federal, nth_of_month: 8}   # MTS: 8th federal day of the month
+        stale_watermark: {n: 1}
+        value_jump: {pct: 100}     # month deficit lines flip sign; over the year to 2026-10
+                                   # 25% was crossed 18 times, 100% 5 times
+      # irregular releases (auction days, month ends, quarter ends): no due days, so no
+      # zero_new_rows or stale_watermark; value_jump still checks their new rows
+      auctions: {due: none}
+      avg_interest_rates: {due: none}
+      rates_of_exchange: {due: none}

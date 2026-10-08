@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -5,7 +6,7 @@ from datetime import date, datetime, timedelta
 import duckdb
 import typer
 
-from usfin import __version__, calendars, jobs, raw, store
+from usfin import __version__, alerts, calendars, jobs, raw, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 from usfin.sources import fiscal
@@ -262,3 +263,41 @@ def fd_probe(
     for col, fd_type in types.items():
         sample = rows[-1].get(col) if rows else None
         typer.echo(f"{col}\t{fd_type}\t{fiscal.sql_type(fd_type)}\t{sample!r}")
+
+
+alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")
+app.add_typer(alerts_app, name="alerts")
+
+
+@alerts_app.callback(invoke_without_command=True)
+def alerts_list(
+    ctx: typer.Context,
+    include_acked: bool = typer.Option(False, "--all", help="Include acknowledged alerts."),
+) -> None:
+    """List open alerts, newest first (--all: acknowledged ones too)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    with _db_session(apply_migrations=True) as con:
+        rows = alerts.list_alerts(con, include_acked=include_acked)
+    if not rows:
+        typer.echo("no alerts" if include_acked else "no open alerts")
+    for a in rows:
+        detail = "" if a["detail"] is None else json.dumps(a["detail"], default=str)
+        acked = (
+            f"\tacked {a['acknowledged_at']:%Y-%m-%d %H:%M}Z" if a["acknowledged_at"] else ""
+        )
+        typer.echo(
+            f"#{a['id']}\t{a['raised_on']}\t{a['job']}\t{a['rule']}\t{a['subject']}"
+            f"\t{detail}{acked}"
+        )
+
+
+@alerts_app.command("ack")
+def alerts_ack(alert_id: int = typer.Argument(..., help="Alert id (as listed).")) -> None:
+    """Acknowledge an alert so it leaves the open list."""
+    with _db_session(apply_migrations=True) as con:
+        found = alerts.ack(con, alert_id)
+    if not found:
+        typer.echo(f"no alert #{alert_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"acknowledged #{alert_id}")
