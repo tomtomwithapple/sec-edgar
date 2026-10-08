@@ -37,3 +37,14 @@ jobs:
       auctions: {due: none}
       avg_interest_rates: {due: none}
       rates_of_exchange: {due: none}
+  treasurydirect:
+    cron: "0 14 * * *"             # after the 11:30 and 13:00 ET auction results
+    calendar: bond
+    due: bond
+    keys:
+      announced: {due: none}       # newest announced auction date: no rules
+      results:
+        # newest auction date with results; since 2015 at most 3 bond days in a row passed
+        # without an auction (since 2023 at most 1), and some bond days have none, so no
+        # zero_new_rows
+        stale_watermark: {n: 3}

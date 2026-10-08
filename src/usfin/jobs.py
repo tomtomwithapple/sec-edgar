@@ -105,7 +105,7 @@ class Registry:
 REGISTRY = Registry()
 """Process-wide registry; source modules register their jobs here on import."""
 
-SOURCE_MODULES: tuple[str, ...] = ("usfin.sources.fiscal",)
+SOURCE_MODULES: tuple[str, ...] = ("usfin.sources.fiscal", "usfin.sources.treasurydirect")
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
 

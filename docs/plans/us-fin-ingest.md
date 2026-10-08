@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S11 done — next: S12
+Status: S12 done — next: S13
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -489,6 +489,26 @@ announced|auctioned` plus `payload JSON` (unknown fields stay in payload; a new 
 current fixture. `status = auctioned` when any of highYield / highDiscountRate /
 highInvestmentRate is non-empty. An upsert never lowers `status` and never overwrites a non-NULL
 result field with NULL (the `announced` feed carries already-auctioned rows with blanks).
+*(Amended in S12.)* There are no old vs new field names: all 11 143 records of the whole history
+(the 37.6 MB a lowercase-parameter `search` returns, auction dates 1979-10-31..2026-10-08) carry
+the same 120 string-valued keys, so the "field map" is only camelCase → typed column
+(`usfin.sources.treasurydirect.FIELD_MAP`); the 2010 and current fixtures map identically. FRNs
+report their result only as `highDiscountMargin` (155 FRNs, never a high yield/rate), so
+`tsy_security` gains `high_discount_margin DOUBLE` and `status = auctioned` when any of highYield /
+highDiscountRate / highInvestmentRate / highDiscountMargin is non-empty (the plan's rule left every
+FRN `announced` forever). `bid_to_cover` ← `bidToCoverRatio`, `indirect_accepted` ←
+`indirectBidderAccepted`, `direct_accepted` ← `directBidderAccepted`; amounts DECIMAL(24,4), rates
+and prices DOUBLE. `announced` lists the latest 250 securities (2026-03-17..2026-10-08 on 10-07 ET),
+240 of them already auctioned and carrying the same results as `auctioned`/`search` — no blanks
+today; the never-lower / never-blank merge stays as a guard and applies to `payload` key by key
+too. `payload` holds the whole upstream record; a key outside the known 120 that no stored payload
+has yet raises `schema_drift` once (subject `tsy_security`, detail `{table, fields}`). Watermark
+keys: `announced` (newest auction date listed, capped at today) and `results` (newest auction date
+*with results*, never moved back); `results` with no watermark asks `auctioned&days=7` (history is
+S13's backfill). Table in migration `002_treasurydirect.sql`. Alerts: due days `bond`; `results`
+has `stale_watermark n: 3` (since 2015 at most 3 bond days in a row passed without an auction,
+since 2023 at most 1) and no `zero_new_rows`, since some bond days have no auction. One 2001-09-11
+4-week bill has no results at all and stays `announced`.
 Job `auction_xcheck` compares `fd_auctions` to `tsy_security` on (cusip, auction_date) for high
 yield/rate and offering amount; each mismatch raises one `auction_mismatch` alert (C15).
 
@@ -1025,7 +1045,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S9 Alerts | done | 2026-10-08 | 0f65700 | 26 new (test_alerts); suite 199 passed | `usfin run fiscal` on `data/usfin.duckdb` at 21:01 ET on 10-07 printed `fiscal #9 ok rows 0` (5.5 s) and `usfin alerts --all` printed `no alerts` — correct: the day's first fiscal run was S8's backfill (#5, empty `watermark_before`), so no key had a baseline, and no watermark was stale (DTS/penny 10-06 is 1 federal day back, MTS 08-31 has 1 due day since). On a scratch copy of the real DB the rules then fired as designed: a simulated Fri 10-09 run with nothing new raised `zero_new_rows` and `stale_watermark` (3 due days > 2) for `dts_operating_cash` and `debt_to_penny` only; with the baseline a year back, `value_jump` raised 14 (9 rates_of_exchange, 5 mts_table_1, 0 for TGA/penny/avg rates) — among them the 2026-09-30 exchange-rate release, where some rows carry their neighbour's rate (Nepal-Rupee 151.46 → 1.771 ≈ NZD's rate, NZ-Dollar 1.767 → 0.881), an upstream error the rule exists for. No webhook configured, none sent. Plan amended (Alerts): `zero_new_rows` baseline is the watermark before the day's first run — the plan's `watermark_before` fires on every repeat run; first loads skip the baseline rules; `Job.observed`, `schedule.yaml` shape, fiscal due days and thresholds, `series`/`jump_match` in `fiscal_data.yaml` (`src_line_nbr` is no series key: 553 of 681 jumps > 10 % were line shifts); `db_locked` left to S10. |
 | S10 Scheduler and usfin serve | done | 2026-10-08 | 503ed48 | 23 new (test_scheduler); suite 222 passed | `usfin schedule` printed `fiscal  0 17 * * *  federal` and 10-08, 10-09, 10-13, 10-14, 10-15 17:00 (Columbus Day 10-12 skipped). `usfin serve` on `data/usfin.duckdb` at 21:08 ET on 10-07: `/api/health` `scheduler: running`, no catch-up queued (last ok fiscal run 21:01 ET is after the 17:00 fire — correct). `POST /api/jobs/fiscal/run` answered 202 in 9 ms; the worker ran `fiscal #10 ok (manual) rows 0` in 5 s (6 Fiscal requests), `usfin jobs` showed it with unchanged watermarks; `POST /api/jobs/nope/run` → 404. While serve ran a job, `USFIN_LOCK_WAIT=1 usfin jobs` exited 1 `database busy` (decision A as designed), and printed #11 once it finished. Restarted with `USFIN_LOCK_WAIT=2` and another process holding the DB: run-now logged `job fiscal not run: database busy`, health showed `pending_db_locked: 1`; the next run-now stored alert #1 `fiscal/db_locked/fiscal` (raised_on 2026-10-07, the NY date) before running `#12 ok`; the induced alert was acked. Ctrl-C shut the scheduler and uvicorn down cleanly; no process left, port 8660 free. Plan amended (Scheduler: APScheduler numbers Monday 0 in crontab dow, so named days are required; module API, catch-up rules, skipped row keeps watermark_before; Alerts: how `db_locked` is raised; Tech stack: starlette TestClient `httpx2` warning filtered). |
 | S11 UI shell: jobs and alerts | done | 2026-10-08 | a999ead | 12 new (test_web_jobs); suite 234 passed | `usfin serve` on `data/usfin.duckdb` (Mac clock 21:13 ET on 10-07): `/` listed `fiscal` (`0 17 * * *` federal, next 2026-10-08 17:00 EDT, #12 ok manual, six watermarks) and `_demo` (not registered without `USFIN_DEMO`, shown from the run log with its #4 failed error); `/?format=csv` gave the same two rows; `/alerts` said `no open alerts`, `/alerts?format=csv&all=1` returned `alerts_all.csv` with S10's acked `db_locked` alert #1 (detail JSON, `acknowledged_at`); `/static/style.css` 200 `text/css`. `curl -XPOST -H 'Accept: text/html' /api/jobs/fiscal/run` answered 303 → `/` in 2 ms and the worker ran `fiscal #13 ok (manual) rows 0` in 4 s. With another process holding the DB, `/` waited the 5 s UI lock wait and rendered the 503 busy page (DuckDB's lock message under Details); a CSV request started 7 s into a 12 s hold got 200 once the holder let go inside its wait; `/` answered 200 after release. SIGINT shut the scheduler and uvicorn down; no process left, port 8660 free. Wheel and sdist carry `web/templates/*.html` and `web/static/style.css`. Plan amended (Web UI): form posts get 303 back by `Accept` negotiation (a JSON 202 strands a browser and POST bodies are out), the `usfin.web.tables` helper, `ui_wait`, busy responses, `?all=1`. |
-| S12 TreasuryDirect job | todo | | | | |
+| S12 TreasuryDirect job | done | 2026-10-08 | | 17 new (test_treasurydirect); suite 251 passed (test_store's `version: 1` now reads the latest migration) | `usfin run treasurydirect` on `data/usfin.duckdb` (Mac clock 21:21 ET on 10-07): `treasurydirect #14 ok rows 250` in 5.4 s — 2 requests (`announced` 885 KB, `auctioned&days=7` 32 KB), migration 002 applied; `tsy_security` 247 `auctioned` (auction_date 2026-03-17..2026-10-07) + 3 `announced` (the 2026-10-08 4-/8-week bills and the 30-year bond reopening); watermarks `announced` and `results` both 2026-10-07 (the 10-08 auctions capped at the ET date); no alerts. Second run `#15 ok rows 0` in 5.4 s, table unchanged. Live probes for the fixtures: camelCase `search` 2010-03-01..03-10 gave 11 records (39 KB), lowercase names gave the whole history (37.6 MB, 11 143 records, earliest auction 1979-10-31 — S13 still probes the earliest window). Plan amended (TreasuryDirect): no old/new field names exist (one 120-key shape since 1979), FRN results live only in `highDiscountMargin` so the status rule and a `high_discount_margin` column include it, `announced` carries full results today, keys `announced`/`results`, drift once per new key, alert rules. |
 | S13 TreasuryDirect backfill | todo | | | | |
 | S14 Auction cross-check | todo | | | | |
 | S15 BLS client and series config | todo | | | | |

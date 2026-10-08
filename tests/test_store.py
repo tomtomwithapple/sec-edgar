@@ -204,7 +204,7 @@ def test_cli_db_migrate_and_info(db, monkeypatch, tmp_path):
     info = runner.invoke(app, ["db", "info"])
     assert info.exit_code == 0, info.output
     assert str(db) in info.output
-    assert "version: 1" in info.output
+    assert f"version: {store.available_migrations()[-1].version}" in info.output
     for table in CORE_TABLES:
         assert table in info.output
 
