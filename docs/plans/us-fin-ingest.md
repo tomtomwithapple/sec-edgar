@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S0 done — next: S1
+Status: S1 done — next: S2
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -252,12 +252,18 @@ recorded in `schema_version`. Each slice that adds tables adds a migration; none
 **Core tables.**
 - `raw_response(id BIGINT PK, source, dataset, url, request_sha256 NULL, fetched_at,
   http_status, sha256, blob_path, bytes, content_type, pruned_at NULL)`.
-- `job_run(id PK, job, started_at, finished_at, status ok|failed|skipped, rows_upserted,
+- `job_run(id PK, job, started_at, finished_at, status running|ok|failed|skipped, rows_upserted,
   watermark_before JSON, watermark_after JSON, error, trigger scheduled|manual|catchup|chained)`.
 - `watermark(job, key, value VARCHAR, updated_at)` PK (`job`, `key`) — value is a date,
   timestamp or accession, interpreted by the job; capped at today for dates.
 - `alert(id PK, job, rule, subject, detail JSON, raised_on DATE, raised_at, acknowledged_at
   NULL)`, unique (`job, rule, subject, raised_on`).
+- `id` columns are `BIGINT PRIMARY KEY DEFAULT nextval('<table>_id_seq')`; `status` and
+  `trigger` are `CHECK`-constrained. `job_run.status` also allows `running` (amended in S1: the
+  runner opens the row before the job finishes, so it needs a non-final status).
+  `schema_version(version PK, name, applied_at)`. `store.session()` applies pending migrations on
+  open (`apply_migrations=False` to skip); `usfin db migrate` / `usfin db info` exit 1 with
+  "database busy — …" on `DatabaseLocked`.
 
 **Raw store (C1, C17).** Body is gzipped to `raw/<source>/<sha[:2]>/<sha>.gz` (sha of the
 uncompressed body); identical bodies share one blob, every fetch gets its own `raw_response`
@@ -813,7 +819,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | Slice | Status | Date | Commit | Tests | Run showed |
 |-------|--------|------|--------|-------|------------|
 | S0 Scaffold | done | 2026-10-08 | 70b5a87 | 10 new (test_cli 2, test_settings 8); suite 10 passed | `uv sync` resolved 43 packages on CPython 3.13.14; `usfin version` printed `0.1.0`; uv.lock pins all 14 Tech stack versions exactly (deps pinned with `==` in pyproject); `uv build` made sdist + wheel. Real env wins over `.env`; `.env` is read without mutating `os.environ`; bad `USFIN_LOCK_WAIT` → `ConfigError`. No plan change. |
-| S1 Store, migrations, lock wait | todo | | | | |
+| S1 Store, migrations, lock wait | done | 2026-10-08 | | 12 new (test_store); suite 22 passed | `db migrate` on a fresh `data/usfin.duckdb` printed `applied 001_core`, re-run `schema up to date`; `db info` printed path, `version: 1`, tables `alert, job_run, raw_response, schema_version, watermark`. With a second python process holding the real file, `USFIN_LOCK_WAIT=1 usfin db info` exited 1 after ~1 s with `database busy — …` (DuckDB `IOException` "Could not set lock on file … Conflicting lock is held in … (PID n)"); after release it opened clean. Each migration runs in its own transaction (a broken one rolls back fully). Plan amended (Core tables): `job_run.status` gains `running`; ids from sequences. |
 | S2 Raw store | todo | | | | |
 | S3 Rate limiter and HTTP client | todo | | | | |
 | S4 Calendars | todo | | | | |
