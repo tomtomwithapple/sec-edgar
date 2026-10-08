@@ -382,3 +382,58 @@ def test_fixture_documents_are_the_columnar_shape_the_parser_reads():
     main = json.loads((FIXTURES / "CIK0000320193.json").read_text("utf-8"))
     page = json.loads((FIXTURES / "CIK0000320193-submissions-001.json").read_text("utf-8"))
     assert list(main["filings"]["recent"]) == list(page)
+
+
+# --- acceptance times by fetch day (S23) --------------------------------------------------------
+#
+# Live 2026-10-07 (JPMorgan, fetched 22:37 and 23:07 ET): filings dated that day carry the true UTC
+# — 0001213900-26-107349 (424B2) reads 2026-10-07T01:11:28Z and its index header says
+# ACCEPTANCE-DATETIME 20261006211128, FILED AS OF DATE 20261007 (accepted after 17:30, so dated the
+# next day); the six the feed also listed match its offset-bearing times to the second. Filings
+# dated earlier are shifted (S20). The rule: a filing whose filingDate is the response's New York
+# fetch date keeps its time as UTC; any other is converted back.
+
+
+def test_the_json_time_is_true_utc_when_it_carries_a_filing_of_the_fetch_day():
+    assert submissions.accepted_utc("2026-10-07T01:11:28.000Z", true_utc=True) == naive(
+        2026, 10, 7, 1, 11, 28
+    )
+    assert submissions.accepted_utc("2026-07-31T00:30:28.000Z", true_utc=False) == naive(
+        2026, 7, 30, 20, 30, 28
+    )
+
+
+def _same_day_edit(fake):
+    """Make Apple's 8-K 0000320193-26-000018 a filing of 2026-07-30 seen that evening (true UTC)."""
+    recent = fake.main["filings"]["recent"]
+    i = recent["accessionNumber"].index("0000320193-26-000018")
+    recent["acceptanceDateTime"][i] = "2026-07-30T20:30:28.000Z"
+
+
+def test_a_filing_dated_the_fetch_day_keeps_its_time_as_utc(settings, fake, clock):
+    _same_day_edit(fake)
+    _run(settings, clock, when=utc(2026, 7, 31, 1, 0))  # 21:00 ET on 07-30
+    assert _filings(settings)["0000320193-26-000018"][3] == naive(2026, 7, 30, 20, 30, 28)
+
+
+def test_a_filing_dated_before_the_fetch_day_is_converted(settings, fake, clock):
+    _run(settings, clock, when=utc(2026, 7, 31, 4, 1))  # 00:01 ET on 07-31
+    assert _filings(settings)["0000320193-26-000018"][3] == naive(2026, 7, 30, 20, 30, 28)
+
+
+def test_a_corrected_time_replaces_one_submissions_wrote_unless_the_feed_did(settings, fake, clock):
+    _same_day_edit(fake)
+    wrong = naive(2026, 7, 30, 16, 30, 28)  # what S20's always-convert rule stored
+    with store.session(settings.db_path, wait=0) as con:
+        for acc in ("0000320193-26-000018", "0000320193-25-000079"):
+            filings.upsert_filings(
+                con,
+                [filings.Filing(acc, APPLE, "8-K", date(2026, 7, 30), wrong, None, None, False,
+                                "submissions")],
+            )  # fmt: skip
+        filings.add_parties(con, [("0000320193-25-000079", APPLE, "Filer")])  # the feed saw it
+    result = _run(settings, clock, when=utc(2026, 7, 31, 1, 0))
+    assert result.status == "ok", result.error
+    rows = _filings(settings)
+    assert rows["0000320193-26-000018"][3] == naive(2026, 7, 30, 20, 30, 28)
+    assert rows["0000320193-25-000079"][3] == wrong  # a feed party: the feed's time stays

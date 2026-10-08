@@ -16,11 +16,17 @@ when no stored response has been parsed for that listing.
 forward by the UTC offset once more (2026-07-30 16:30:28 EDT is written 2026-07-31T00:30:28Z;
 2026-01-29 16:30:33 EST 2026-01-30T02:30:33Z; checked against the filings' index headers on
 2026-10-08), so `accepted_utc` reads it as UTC, converts to New York and keeps the wall time.
-*(Found in S22.)* That shift is not on every filing: on the filing day the JSON carries the true
-UTC (JPMorgan 424B2s of 2026-10-07 read 20:24:53Z where the feed says 16:24:53-04:00; that day's
-`recent` entries all fall 06:00–22:00 ET read as UTC, earlier days' sit 4 h later), so a filing
-fetched on its own day is stored 4–5 h early here. The feed's `accepted_at` replaces it
-(`filings.upsert_filings`); a filing the feed never saw keeps it — S23/S26 decide the rule.
+*(Found in S22, decided in S23.)* That shift is not on every filing: a filing whose
+`filingDate` is the New York date the response was fetched carries the true UTC (JPMorgan,
+fetched 2026-10-07 22:37 and 23:07 ET: the six 424B2s the feed also listed match its
+offset-bearing times to the second, and 0001213900-26-107349 reads 2026-10-07T01:11:28Z where its
+index header says ACCEPTANCE-DATETIME 20261006211128, FILED AS OF DATE 20261007 — accepted after
+17:30, so dated the next day: a rule on the acceptance date would get it wrong). So
+`store_document(fetched_at=)` reads the time as UTC for a filing of the fetch day and converts the
+others; the choice uses the stored response's `fetched_at`, so reparse is deterministic. A
+corrected value replaces one submissions wrote before (`filings.upsert_filings`) unless a feed
+role is stored for the filing (the feed's time wins). Without `fetched_at` (S26's bulk members)
+every time is converted, as S20 did.
 
 Each filing becomes an `edgar_filing` row (`source='submissions'`, `cik` = the company) and an
 `edgar_filing_party` row (the company, role `submissions`: the JSON names no role). Every
@@ -70,20 +76,26 @@ def main_url(cik: int) -> str:
     return f"{BASE}CIK{cik_key(cik)}.json"
 
 
-def accepted_utc(value: str | None) -> datetime | None:
-    """`acceptanceDateTime` as naive UTC (see the module doc: its `Z` is not UTC)."""
+def accepted_utc(value: str | None, *, true_utc: bool = False) -> datetime | None:
+    """`acceptanceDateTime` as naive UTC: as written when `true_utc` (a filing of the fetch day),
+    else converted back from SEC's shift (see the module doc)."""
     if not value:
         return None
-    shifted = datetime.fromisoformat(value).astimezone(UTC)
-    return shifted.astimezone(ET).replace(tzinfo=None)
+    parsed = datetime.fromisoformat(value).astimezone(UTC)
+    if true_utc:
+        return parsed.replace(tzinfo=None)
+    return parsed.astimezone(ET).replace(tzinfo=None)
 
 
 def _date(value: Any) -> date | None:
     return date.fromisoformat(value) if value else None
 
 
-def filings_from_columns(cols: Mapping[str, Any], *, cik: int) -> list[edgar_filings.Filing]:
-    """The filings of one columnar block (`filings.recent` or a page)."""
+def filings_from_columns(
+    cols: Mapping[str, Any], *, cik: int, fetched_on: date | None = None
+) -> list[edgar_filings.Filing]:
+    """The filings of one columnar block (`filings.recent` or a page); `fetched_on` is the New
+    York date the response was fetched (filings of that date carry the true UTC)."""
     if not isinstance(cols, Mapping):
         raise SubmissionsError(f"expected columnar filings, got {type(cols).__name__}")
     missing = [c for c in REQUIRED if not isinstance(cols.get(c), list)]
@@ -105,13 +117,14 @@ def filings_from_columns(cols: Mapping[str, Any], *, cik: int) -> list[edgar_fil
     ):  # fmt: skip
         if not acc or not filed or not form:
             raise SubmissionsError(f"filing {acc!r} lacks accessionNumber, filingDate or form")
+        filed_at = date.fromisoformat(filed)
         out.append(
             edgar_filings.Filing(
                 accession_no=acc,
                 cik=cik,
                 form=form,
-                filed_at=date.fromisoformat(filed),
-                accepted_at=accepted_utc(accepted),
+                filed_at=filed_at,
+                accepted_at=accepted_utc(accepted, true_utc=filed_at == fetched_on),
                 report_date=_date(report),
                 primary_doc=doc or None,
                 is_amendment=edgar_filings.is_amendment(form),
@@ -152,10 +165,16 @@ class Stored:
 
 
 def store_document(
-    con: duckdb.DuckDBPyConnection, doc: Any, *, name: str, raw_id: int | None = None
+    con: duckdb.DuckDBPyConnection,
+    doc: Any,
+    *,
+    name: str,
+    raw_id: int | None = None,
+    fetched_at: datetime | None = None,
 ) -> Stored:
     """Store one submissions document named `name` (`CIK##########.json` or a page
-    `CIK##########-submissions-NNN.json`, as served and as bulk ZIP members are named)."""
+    `CIK##########-submissions-NNN.json`, as served and as bulk ZIP members are named);
+    `fetched_at` (naive UTC) is when it was fetched, which decides how acceptance times are read."""
     m = NAME.fullmatch(name)
     if m is None:
         raise SubmissionsError(f"{name!r} is not a submissions document name")
@@ -163,13 +182,17 @@ def store_document(
     if not isinstance(doc, Mapping):
         raise SubmissionsError(f"{name}: expected an object, got {type(doc).__name__}")
     is_page = "-submissions-" in name
+    fetched_on = (
+        None if fetched_at is None else fetched_at.replace(tzinfo=UTC).astimezone(ET).date()
+    )
     if is_page:
-        found = filings_from_columns(doc, cik=cik)
+        found = filings_from_columns(doc, cik=cik, fetched_on=fetched_on)
         newest = None
     else:
         if str(doc.get("cik", "")).lstrip("0") != str(cik):
             raise SubmissionsError(f"{name}: cik is {doc.get('cik')!r}")
-        found = filings_from_columns((doc.get("filings") or {}).get("recent"), cik=cik)
+        recent = (doc.get("filings") or {}).get("recent")
+        found = filings_from_columns(recent, cik=cik, fetched_on=fetched_on)
         newest = max((f.filed_at for f in found), default=None)
         _store_listing(con, cik, page_listing(doc))
     rows = edgar_filings.upsert_filings(con, found)
@@ -243,16 +266,18 @@ def _fetch(ctx: "jobs.JobContext", key: str) -> Sequence[int]:
 
 def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
     found = ctx.con.execute(
-        "SELECT url, http_status FROM raw_response WHERE id = ?", [raw_id]
+        "SELECT url, http_status, fetched_at FROM raw_response WHERE id = ?", [raw_id]
     ).fetchone()
     if found is None:
         raise LookupError(f"raw_response {raw_id} does not exist")
-    url, status = found
+    url, status, fetched_at = found
     if status != 200:
         return 0
     with raw.open(ctx.con, raw_id, raw_dir=ctx.settings.raw_dir) as fh:
         doc = json.loads(fh.read())
-    stored = store_document(ctx.con, doc, name=url.rsplit("/", 1)[-1], raw_id=raw_id)
+    stored = store_document(
+        ctx.con, doc, name=url.rsplit("/", 1)[-1], raw_id=raw_id, fetched_at=fetched_at
+    )
     if stored.newest is not None:
         ctx.advance(cik_key(stored.cik), stored.newest)
     return stored.filings

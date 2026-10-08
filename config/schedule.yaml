@@ -75,6 +75,14 @@ jobs:
     due: federal
     alerts:
       stale_watermark: {n: 1}      # no new filing seen over a whole federal day
+  edgar_reconcile:
+    cron: "30 23 * * *"            # master.YYYYMMDD.idx for the federal days from
+                                   # min(watermark, today - 7d); today's index may not be out
+                                   # yet (404, normal). Form 4 / 13D/G accessions are queued.
+    calendar: federal
+    due: federal
+    alerts:
+      stale_watermark: {n: 1}      # no new day's index over more than one federal day
   edgar_submissions:               # no cron: drains pending_doc kind submissions, chained after
                                    # edgar_feed (S22); `usfin edgar submissions --cik` by hand
     calendar: federal

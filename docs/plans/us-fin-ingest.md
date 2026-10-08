@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S22 done — S18 blocked (FRED_API_KEY) — next: S23
+Status: S23 done — S18 blocked (FRED_API_KEY) — next: S24
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -699,6 +699,10 @@ zero-padded in URLs, stored as BIGINT.
   the submissions value can be 4–5 h off, see Submissions); every other column stays fill-only.
   Live 2026-10-07 the feed also names roles **Depositor** and **Securitizer** (ABS-15G); they are
   stored as parties and never pick `cik`.
+  *(Amended in S23.)* A submissions `accepted_at` also replaces a stored one when the filing has no
+  feed-role party (`filings.NON_FEED_ROLES` = `submissions`, `index`): S23's same-day rule (see
+  Submissions) makes every submissions response yield the same time, so a later fetch or a reparse
+  corrects what S20 wrote; once the feed's time is there it is never moved.
 - Submissions (job `edgar_submissions`, raw dataset `edgar_submissions`):
   `data.sec.gov/submissions/CIK##########.json`; parse `filings.recent` columnar arrays and follow
   `filings.files[]` (older pages) → `edgar_filing` (`source='submissions'`).
@@ -720,7 +724,21 @@ zero-padded in URLs, stored as BIGINT.
   only after the filing day, and the S20 conversion stores a same-day filing 4–5 h early. The feed's
   `accepted_at` now replaces it (above); a filing the feed never saw keeps the S20 value. Deciding
   per filing (e.g. filing date vs the response's New York fetch date) is left to S23/S26 or the
-  user; it was not changed silently. `recent` is the newest 1 000 filings, or one year for very heavy filers
+  user; it was not changed silently.
+  *(Decided in S23.)* The parser reads `acceptanceDateTime` as true UTC when the filing's
+  `filingDate` equals the New York date of the response's `fetched_at`, and converts it (S20)
+  otherwise; `store_document(…, fetched_at=)` carries the time, `_parse` takes it from
+  `raw_response`, so reparse is deterministic (without it — S26's bulk members — every time is
+  converted, as before; S26 checks bulk against this rule). Evidence (2026-10-07, JPMorgan fetched
+  22:37/23:07 ET, Apple 22:37 ET): the 6 accessions the feed also listed match its offset-bearing
+  times to the second; 0001213900-26-107349 (424B2) reads `2026-10-07T01:11:28Z` and its index
+  header says ACCEPTANCE-DATETIME 20261006211128, FILED AS OF DATE 20261007 — accepted after 17:30
+  and dated the next day, so the rule must key on `filingDate`, not the acceptance date (6 such
+  filings); earlier filing dates sit 4 h later as S20 found. `usfin reparse edgar_submissions` on
+  `data/usfin.duckdb` changed **72 rows**, each +4 h (all JPMorgan filings dated 2026-10-07 the feed
+  had not seen: 48 `0001918704-…`, 24 `0001213900-…`), Apple none; a second reparse 0. Not known:
+  when SEC rebuilds the JSON — a fetch just after midnight ET may still carry the previous day's
+  true UTC and be converted wrongly; a later fetch or the feed corrects it. `recent` is the newest 1 000 filings, or one year for very heavy filers
   (JPMorgan 26 311 filings, 4.6 MB). Pages hold the same arrays at their top level, are **numbered
   newest first** (JPMorgan `-001` = 2025-09-03..2025-10-05, `-070` = 1994..2004), and a listing's
   `filingFrom`/`filingTo` are not its first/last filing dates (Apple's page lists ..2015-09-15, its
@@ -800,6 +818,29 @@ zero-padded in URLs, stored as BIGINT.
   days from max(watermark − 7 days, today − 7 days) to today (404 for a not-yet-published day is
   normal) → `edgar_filing` (`source='index'`) and `edgar_filing_party` (role `index`); missing
   Form 4 / 13D/G accessions are enqueued in `pending_doc` and drained by the same chain (C14).
+  *(Amended in S23.)* **The window was wrong here and in the S23 entry:** max(watermark − 7 days,
+  today − 7 days) is today − 7 days for any watermark not in the future, so it ignored outages,
+  against C3 ("max(7 days, back to the watermark)") and review finding 10. Built: the federal days
+  from **min(watermark, today − 7 days)** to today; watermark key `master` = the newest day whose
+  index parsed (`dailyindex.window`). A 404 for today is normal; a 404 for an earlier federal day
+  fails the key after the other days parsed (the `compute` hook), so the gap stays visible and the
+  watermark does not move — an unscheduled SEC closure goes in `calendars.yaml`. Live 2026-10-07
+  23:14 ET: `application/octet-stream`, ASCII, LF, no newline after the last line; header lines
+  (`Description:`, `Last Data Received:`, …), the column line `CIK|Company Name|Form Type|Date
+  Filed|File Name`, 80 dashes, then one line per CIK of a filing **sorted by CIK as text** (an
+  accession's CIKs are not adjacent) with no role; `File Name` is `edgar/data/<cik>/<acc>.txt`;
+  `Date Filed` (`YYYYMMDD`, stored as `filed_at`) need not be the index's day (DRS, EFFECT and
+  FOCUSN of earlier dates); some (accession, CIK) lines repeat verbatim 2–3 times (26 pairs on
+  10-07: ABS-15G depositor = securitizer, 485s per series), so parties are distinct pairs; no
+  accession sat in two days' files (18 592 over 6 days). `cik` is the first listed CIK until
+  `settle_cik` finds a feed role; Form 4 (`4`, `4/A`) and 13D/G (`feed.SCHED13_FORMS`) accessions
+  are queued (kinds `form4`/`sched13`, CIK = the settled `cik` — for an index-only Form 4 that may be
+  an owner, so **S24 must read the issuer from the XML**; any party CIK serves the folder URL);
+  a row the feed queued first stays. The 10-07 index was already out at 23:21 ET (`Last Data
+  Received: Oct 7`) and held all 628 feed accessions. Module `usfin.sources.edgar.dailyindex`, raw
+  dataset `edgar_master_idx`, schedule `30 23 * * *` federal, `due: federal`, `stale_watermark n: 1`.
+  **Chain:** none yet — S24/S25 add `edgar_form4`/`edgar_sched13` to **both** `feed.JOB.then` and
+  `dailyindex.JOB.then`.
 - Form 4 (job `edgar_form4`, raw datasets `edgar_filing_index`, `edgar_form4_xml`): filing folder
   `Archives/edgar/data/{cik}/{accession_nodash}/index.json` → the ownership `.xml` →
   `insider_txn(accession_no, line_no, issuer_cik, owner_cik, owner_name, is_derivative,
@@ -1166,7 +1207,7 @@ Done when: feed half of C14 covered.
 
 ### S23 — EDGAR daily-index reconcile
 Depends on: S22
-Red: `tests/test_edgar_dailyindex.py` — `master.idx` fixture parse; window from max(watermark−7d, today−7d) over federal days; 404 for today is not an error; every accession once in `edgar_filing`, all CIKs in parties; missing Form 4/13D/G enqueued.
+Red: `tests/test_edgar_dailyindex.py` — `master.idx` fixture parse; window from min(watermark, today−7d) over federal days *(amended in S23: was max(watermark−7d, today−7d), which ignores outages against C3)*; 404 for today is not an error; every accession once in `edgar_filing`, all CIKs in parties; missing Form 4/13D/G enqueued.
 Green: `sources/edgar/dailyindex.py`, job `edgar_reconcile` (chain form4, sched13), schedule 23:30 federal.
 Run: `uv run usfin run edgar_reconcile` live; compare one day's idx accession count to `edgar_filing`.
 Done when: C14 covered (live day matches exactly).
@@ -1282,7 +1323,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S20 EDGAR submissions | done | 2026-10-08 | a679aac | 17 new (test_edgar_submissions); suite 372 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get` (7 requests): Apple's JSON and its one page (fixtures, trimmed to 7 + 4 filings), two Apple 8-K `-index-headers.html` (proved `acceptanceDateTime`'s `Z` is false: header 16:30:28 EDT vs JSON 00:30:28Z next day, 16:30:33 EST vs 02:30:33Z), Berkshire (1 page, so not heavy enough) and JPMorgan (70 pages). On `data/usfin.duckdb` (migration 008 applied): `usfin edgar submissions --cik 320193` → `#26 ok rows 2264` (1 000 recent + 1 264 on page 001, 1994-01-26..2026-10-05), 2 requests, 3.8 s; `--cik 19617` (JPMorgan, the paged-history check) → `#27 ok rows 168590` (26 311 recent — one year — + 142 279 on 70 pages, exactly the listed counts, 1994-01-20..2026-10-07; 130 136 424B2), 71 requests, 29.8 MB of JSON, 108 s, nearly all of it SEC transfer time (parsing all 75 responses takes 2.8 s); both again → `#28 ok rows 0`, 1 request per CIK (pages skipped by listing), 30.5 s (JPMorgan's 4.6 MB main JSON); `usfin reparse edgar_submissions` replayed 75 responses, rows 0; on a scratch copy with the three tables emptied it rebuilt 170 854 filings, 170 854 parties and 71 pages to the identical md5 in 3.8 s. `usfin run edgar_submissions` (no `pending_doc` yet) → `#29 ok rows 0`, no request. Watermarks 0000320193 = 2026-10-05, 0000019617 = 2026-10-07; no alerts; `raw/` 9.9 MB, DB 80 MB. Plan amended (How › SEC EDGAR, Submissions): false-UTC acceptance times, `filed_at` DATE, fill rule as shared code, party role `submissions` (S22 decides cik precedence over it), pages numbered newest first with listing dates ≠ filing dates so tracked by listing in new `edgar_submissions_page`, keys from `pending_doc`, `--cik` CLI. |
 | S21 EDGAR companyfacts | done | 2026-10-08 | 1d73942 | 18 new (test_edgar_companyfacts); suite 390 passed | Live, no 403, `SEC_USER_AGENT` from `.env`, 6 requests in all. Probes via `usfin http get` (raw 737/738, dataset `http_get`): Apple companyfacts 3 789 099 bytes, JPMorgan 7 977 054 bytes (taxonomies dei, us-gaap, invest, srt, ffd, ecd); fixtures trimmed to 9 + 8 verbatim facts (instant, duration, Apple FY2009 `SalesRevenueNet` 36 537 M in the 10-K of 2009-10-27 restated to 42 905 M by the 10-K/A of 2010-01-25, USD/shares, a DEF 14A fact with null `fy`/`fp`, and `invest`/`srt`/`ecd` to be dropped). On `data/usfin.duckdb` (migration 009 applied): `usfin edgar facts --cik 320193` → `#30 ok rows 25135` (505 tags, filed 2009-07-22..2026-07-31), 1 request, 5.2 s; `--cik 19617` → `#31 ok rows 49946` (920 tags, filed 2009-08-10..2026-08-06), 5.7 s — nearly all transfer; both again → `#32 ok rows 0` (same sha256 bodies), 17.2 s of SEC transfer; `usfin reparse edgar_companyfacts` replayed 4 responses in 1.7 s, rows 0; on a scratch copy with `xbrl_fact` emptied, reparse rebuilt 75 081 facts to the identical md5 in 1.6 s (~95 000 facts/s parsed). `xbrl_as_of`: Apple revenue tags as of 2025-10-30 vs 2025-10-31 = 325 vs 328 rows, nothing removed, the 3 added all accn 0000320193-25-000079 (10-K filed 2025-10-31); as of 2009-10-26 vs 2010-01-25 = 4 vs 12, the 8 added from the 10-K, 10-Q and 10-K/A filed in between. Storage: JSON gzips to 6.5 % in `raw/` (256 KB + 503 KB, shared by the 3 fetches each); **xbrl_fact 91 bytes/fact with the PK, 21 without** (fresh files, checkpointed; the DB file itself barely moved, 71.6 → 72.1 MB, as freed blocks were reused). Plan amended (How › SEC EDGAR › Companyfacts): document shape, nullable `fy`/`fp`, `frame` moves, types, `xbrl_as_of` definition, the PK's storage cost as a lever for S26. |
 | S22 EDGAR feed and document queue | done | 2026-10-08 | 5a97746 | 45 new (test_edgar_feed, 18 of them form→kind cases); 3 changed (tickers: a run inside the block is `skipped`; submissions/companyfacts: `pending_doc` now comes from migration 010); suite 435 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Fixtures: 4 probes via `usfin http get` (raw 743–746: the unfiltered feed and `type=10-Q`, `8-K`, `SC 13G`), trimmed to 9 + 2 + 2 + 0 verbatim entries (13G Filed by/Subject, Form 4 Reporting/Issuer, a Form 4 with 4 owners, 8-K, 8-K/A, 10-Qs); **no legacy `SC 13G` was in the feed** (that query: "No recent filings", kept as the empty-feed fixture), so legacy names are tested on `pending_kinds` only. `usfin run edgar_feed` on `data/usfin.duckdb` (Mac clock 23:07 ET on 10-07; migration 010 applied): `#33 ok rows 625` — 10 pages (the cap; 1 000 entries back to 16:15 ET), **622 filings** (189 `4`, 96 `424B2`, 43 `8-K`, 49 Schedule 13D/G (+/A), 3 `10-Q` …), parties Filer 353 / Reporting 263 / Issuer 215 / Subject 108 / Filed by 51 / Depositor 1 / Securitizer 1, every Form 4 `cik` = its Issuer; pending: form4 193 (112 CIKs), sched13 49 (46), companyfacts 3 (3 10-Q filers), submissions 6 (JPMorgan 424B2s); chained `edgar_submissions #34 ok rows 0` (1 request, JPMorgan 4.6 MB, pages skipped) and `edgar_companyfacts #35 ok rows 50 777` (3 requests, 7.7 MB); all 9 submissions/companyfacts rows closed (each document carried its accession); **14 requests, 13.4 s**. Those 6 JPMorgan 424B2s exposed the S20 time bug: submissions had stored 16:24:53 for a filing the feed accepted 16:24:53-04:00 (20:24:53Z) — same-day JSON times are true UTC — so the feed's `accepted_at` now wins; `usfin reparse edgar_feed` replayed the 10 pages and fixed the 6 (rows 6), again rows 0. Second run `#36 ok rows 0`: **1 request** (stopped at watermark 2026-10-08T01:59:16), chain `#37`/`#38` rows 0, no request. No alerts. Plan amended: How › HTTP (SEC skip wired), Jobs (`after_key`), SEC EDGAR › Filings (feed roles override `cik`, feed `accepted_at` wins), Submissions (the S20 time conversion is wrong for same-day filings — contradiction recorded, rule left to S23/S26/user), Feed (live shape, 10 pages ≈ 6 h of an evening, queue/drain rules, chain without form4/sched13 until S24/S25, watchlist seed, schedule). |
-| S23 EDGAR daily-index reconcile | todo | | | | |
+| S23 EDGAR daily-index reconcile | done | 2026-10-08 | | 25 new (21 test_edgar_dailyindex, 4 test_edgar_submissions for the same-day time rule); suite 460 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get`: `master.20261006.idx` (raw 762; 310 875 bytes, 3 501 lines, 2 370 accessions; fixture trimmed to 13 lines / 8 accessions: a Form 4 under 3 non-adjacent CIKs, a 4/A, a one-line Form 4, a SCHEDULE 13G and 13D/A, a DRS dated 09-29, a JPMorgan 424B2, the first and last lines) and one `-index-headers.html` (raw 763) for the time rule. **Loose end (submissions times):** decided per filing by `filingDate` = the response's New York fetch date → true UTC, else converted; evidence: the 6 feed-overlap 424B2s equal to the second, and 0001213900-26-107349 JSON 01:11:28Z = header 20261006211128 ET, FILED AS OF 20261007 (6 such evening filings dated the next day — an acceptance-date rule would get them wrong); a submissions time now replaces a stored one unless a feed role exists. `usfin reparse edgar_submissions` (76 responses) → **rows 72**, all +4 h (JPMorgan filings of 10-07 the feed had not seen), again → rows 0; `reparse edgar_feed` rows 0. `usfin run edgar_reconcile` at 23:21 ET on 10-07 (window 09-30..10-07, 6 federal days, 6 requests, all 200 — 10-07's index was already out) → `#39 ok rows 17237`; per day master.idx accessions vs `edgar_filing`: 09-30 2 627/2 627, 10-01 3 898/3 898, 10-02 4 413/4 413, 10-05 3 037/3 037, 10-06 2 370/2 370, **10-07 2 247/2 247 (622 feed + 1 547 index + 78 submissions)**, each exactly once, every distinct (accession, CIK) pair in `edgar_filing_party` (0 missing); all 628 feed accessions were in 10-07's file; 26 pairs listed 2–3 times verbatim; no accession in two days. Watermark `master` = 2026-10-07; `edgar_filing` 171 476 → 188 713, `index` parties 27 516; `pending_doc` form4 4 499 / sched13 491 open (4 748 queued by the index; drained by S24/S25). Second run `#40 ok rows 0` (6 requests, 7.8 s), tables hash-identical; `reparse edgar_reconcile` (12 responses) rows 0; no alerts. Requests in all: 14 (2 probes + 2 × 6 days). Plan amended: How › SEC EDGAR › Daily index reconcile (window was max(wm−7d, today−7d), which ignores outages against C3 — built min(watermark, today−7d), here and in the S23 entry; 404 rules; live format; queue CIK; chain left to S24/S25 on both jobs), Submissions (same-day rule decided, 72 rows), Filings (submissions time replaces unless a feed role). |
 | S24 Form 4 | todo | | | | |
 | S25 Schedule 13D/G | todo | | | | |
 | S26 EDGAR bulk backfill | todo | | | | |

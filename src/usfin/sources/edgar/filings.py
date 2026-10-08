@@ -15,6 +15,10 @@ and reparse lands on the same `cik`. A filing with no feed role keeps the CIK fi
 `accepted_at` from the feed also wins (S22): the feed writes it with an explicit New York offset,
 while the submissions JSON's `acceptanceDateTime` is true UTC on the filing day and shifted by
 the offset later (see `submissions.accepted_utc`), so a value it wrote first may be 4–5 h off.
+*(S23.)* A submissions value replaces one already stored when no feed role is stored for the
+filing: S23 reads same-day JSON times as true UTC, so a later or replayed submissions response
+corrects what S20's always-convert rule wrote (deterministic: every response yields the same
+time), while the feed's time, once there, is never moved.
 """
 
 import json
@@ -28,6 +32,8 @@ SOURCES = ("feed", "index", "submissions")
 ROLE_PRECEDENCE = ("Issuer", "Subject", "Filer", "Filed by", "Reporting")
 """Feed roles in the order that picks `edgar_filing.cik` (other roles never pick it)."""
 FILLABLE = ("accepted_at", "report_date", "primary_doc")
+NON_FEED_ROLES = ("submissions", "index")
+"""Party roles written by role-less sources; any other role came from the feed."""
 
 
 @dataclass(frozen=True)
@@ -76,9 +82,17 @@ def upsert_filings(con: duckdb.DuckDBPyConnection, filings: Sequence[Filing]) ->
         [payload],
     )
     fills = " OR ".join(f"(f.{c} IS NULL AND s.{c} IS NOT NULL)" for c in FILLABLE)
+    no_feed_role = (
+        "NOT EXISTS (SELECT 1 FROM edgar_filing_party p WHERE p.accession_no = s.accession_no"
+        f" AND p.role NOT IN {NON_FEED_ROLES})"
+    )
+    corrects = (
+        "s.source = 'submissions' AND s.accepted_at IS NOT NULL"
+        f" AND f.accepted_at IS DISTINCT FROM s.accepted_at AND {no_feed_role}"
+    )
     fills += (
         " OR (s.source = 'feed' AND s.accepted_at IS NOT NULL"
-        " AND f.accepted_at IS DISTINCT FROM s.accepted_at)"
+        f" AND f.accepted_at IS DISTINCT FROM s.accepted_at) OR ({corrects})"
     )
     con.execute(
         "CREATE OR REPLACE TEMP TABLE _filing_changed AS SELECT s.* FROM _filing_stage s"
@@ -95,6 +109,10 @@ def upsert_filings(con: duckdb.DuckDBPyConnection, filings: Sequence[Filing]) ->
         con.execute(
             "INSERT INTO edgar_filing SELECT * FROM _filing_changed"
             f" ON CONFLICT (accession_no) DO UPDATE SET {sets}"
+        )
+        con.execute(
+            "UPDATE edgar_filing f SET accepted_at = s.accepted_at FROM _filing_changed s"
+            f" WHERE f.accession_no = s.accession_no AND {corrects}"
         )
     con.execute("DROP TABLE _filing_stage")
     con.execute("DROP TABLE _filing_changed")
