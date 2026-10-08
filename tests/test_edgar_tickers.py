@@ -148,7 +148,7 @@ def test_the_file_becomes_one_row_per_cik_and_ticker(settings, fake, clock):
     assert rows[(320193, "AAPL")] == ("Apple Inc.", "AAPL", True, first_seen)
     assert rows[(1067983, "BRK-B")] == ("BERKSHIRE HATHAWAY INC", "BRK.B", True, first_seen)
     assert rows[(1253986, "ABR-PD")][1] == "ABR.PD"
-    assert rows[(2102713, "KCAC-UN")][1] == "KCAC.UN"
+    assert rows[(2102713, "KCAC-UN")][1] == "KCAC.U"
     assert {t for c, t in rows if c == 1652044} == {"GOOGL", "GOOG"}
     [request] = fake.requests
     assert request.headers["User-Agent"] == UA

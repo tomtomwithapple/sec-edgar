@@ -13,7 +13,7 @@ import uvicorn
 from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import ConfigError, load_settings
-from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
+from usfin.sources import bls, bls_calendar, fiscal, nasdaqtrader, treasurydirect
 from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
 from usfin.sources.edgar import concepts as edgar_concepts
@@ -738,6 +738,49 @@ def _requests_since(con, result: jobs.RunResult, dataset: str, cik: int) -> int:
         " (SELECT started_at FROM job_run WHERE id = ?)",
         [dataset, f"%/CIK{cik:010d}%", result.run_id],
     ).fetchone()[0]
+
+
+symbols_app = typer.Typer(no_args_is_help=True, help="Nasdaq Trader symbols.")
+app.add_typer(symbols_app, name="symbols")
+
+
+def _rate(matched: int, total: int) -> str:
+    return f"{matched} of {total} ({100 * matched / total if total else 0:.1f}%)"
+
+
+@symbols_app.command("unmatched")
+def symbols_unmatched(
+    etf: bool | None = typer.Option(
+        None, "--etf/--no-etf", help="Only ETFs / only non-ETFs (default: both)."
+    ),
+    exchange: str | None = typer.Option(None, "--exchange", help="Only this exchange (Q, N, …)."),
+    summary: bool = typer.Option(False, "--summary", help="Print the match rates only."),
+) -> None:
+    """Match rates of listed symbols against EDGAR companies (`ticker_norm`), then every
+    listed symbol no active EDGAR company matches (C10)."""
+    with _db_session(apply_migrations=True) as con:
+        rates = nasdaqtrader.match_rates(con)
+        rows = [] if summary else nasdaqtrader.unmatched(con, etf=etf, exchange=exchange)
+    if not rates:
+        typer.echo("no open symbols (run `usfin run symbols`?)", err=True)
+        raise typer.Exit(1)
+
+    def total(is_etf: bool | None = None, ex: str | None = None) -> str:
+        chosen = [
+            r for r in rates
+            if (is_etf is None or r.etf == is_etf) and (ex is None or r.exchange == ex)
+        ]  # fmt: skip
+        return _rate(sum(r.matched for r in chosen), sum(r.symbols for r in chosen))
+
+    typer.echo(f"matched {total()}")
+    typer.echo(f"non-ETF {total(False)}  ETF {total(True)}")
+    for ex in sorted({r.exchange for r in rates}):
+        typer.echo(f"{ex}  non-ETF {total(False, ex)}  ETF {total(True, ex)}")
+    if summary:
+        return
+    typer.echo(f"unmatched {len(rows)}")
+    for symbol, ex, is_etf, norm, name in rows:
+        typer.echo(f"  {symbol:<10} {ex}  {'ETF' if is_etf else '   '}  {norm:<10} {name}")
 
 
 alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")

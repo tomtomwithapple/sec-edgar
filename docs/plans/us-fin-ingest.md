@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S30 done — S18 blocked (FRED_API_KEY) — next: S31
+Status: S31 done — S18 blocked (FRED_API_KEY) — next: S32
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -680,7 +680,8 @@ zero-padded in URLs, stored as BIGINT.
   values `{cik_str: int, ticker, title}`, 798 727 bytes `application/json`; 10 434 pairs, 8 016 CIKs
   (one fund lists 45 tickers), no ticker under two CIKs, no two tickers with the same `ticker_norm`.
   Tickers are uppercase with `-` before a class/suffix: preferreds `-PA`..`-PZ`, classes `-A`/`-B`,
-  **units `-UN` (50), warrants `-WT` (61), rights `-RI` (21)**, one `NONE.`. `updated_at` is the
+  **units `-UN` (50), warrants `-WT` (61), rights `-RI` (21)**, one `NONE.`. *(S31: their
+  `ticker_norm` now ends `.U`/`.W`/`.R`, Nasdaq's spelling; migration 019 rewrote the 132 stored.)* `updated_at` is the
   `fetched_at` of the response that changed the row (title, `ticker_norm` or `active`), not the run
   clock, so reparse rebuilds the identical table (key `company_tickers`, no watermark: a full file;
   an empty or malformed file fails the key instead of deactivating everything; a non-200 stores
@@ -1111,10 +1112,33 @@ snapshot → no check. Diff → `symbol_history(symbol, exchange, valid_from, va
 etf, …)` PK (`symbol, exchange, valid_from`): new symbol opens a row, gone symbol closes it,
 changed name/ETF flag closes and opens. `ticker_norm(s)`: uppercase, strip; `$` → `.P`; `.`,
 `-`, `/`, space → `.` (so `BRK-B`, `BRK/B` → `BRK.B`; `ABR$D`, `ABR-PD` → `ABR.PD`; `AAC.U`,
-`AAC-U` → `AAC.U`). *(Found in S19.)* EDGAR spells units `-UN`, warrants `-WT`, rights `-RI`
+`AAC-U`, `AAC-UN` → `AAC.U`). *(Found in S19.)* EDGAR spells units `-UN`, warrants `-WT`, rights `-RI`
 (`KCAC-UN` → `KCAC.UN`), so a Nasdaq `.U` unit will not meet EDGAR's `.UN` under this rule; S31
 checks the Nasdaq Trader spellings and decides (suffix map or unmatched). View `symbol_edgar_match` joins open history rows to active `edgar_company`
 rows on `ticker_norm`; `usfin symbols unmatched`.
+*(Decided in S31, on the 2026-10-08 data.)* `ticker_norm` gains one last step: a trailing `.UN` →
+`.U`, `.WT` → `.W`, `.RI` → `.R` (EDGAR's unit/warrant/right suffixes take Nasdaq's ACT
+spelling; `AAC-UN` → `AAC.U`, `AAC-WT` → `AAC.W`, `AIIA-RI` → `AIIA.R`). Before it, 145 of 7 486
+open non-ETF symbols were unmatched and 131 of them were exactly these (`.W` 61, `.U` 50, `.R`
+20, all on A/N); every one met its EDGAR `-WT`/`-UN`/`-RI` under the map. No collision: the
+10 434 EDGAR tickers keep 10 434 distinct norms and the 13 253 open symbols 13 253. Nothing else
+generalizes, so nothing else is mapped: `-WTA` (Noble `NE-WTA`, Nasdaq `NE.A`, CQS `NE.WS.A`),
+`-RW` (2) and preferred `$x`/`-Px` (already one form) stay as they are; preferred series U/R
+(`NEE-PU`) are untouched because the map needs the dot right before `UN`/`WT`/`RI`. Migration 019
+adds DuckDB macro `ticker_norm(s)` (the same function in SQL; tests and the S31 run hold them
+equal on every stored ticker and symbol), rewrites the 132 stored `edgar_company.ticker_norm`
+values it changes (keeping `updated_at`: the upstream row did not change, and a reparse from
+scratch builds the same table — `usfin reparse edgar_tickers` after it: rows 0), and creates view
+`symbol_edgar_match(symbol, exchange, file, name, etf, ticker_norm, cik, edgar_ticker,
+edgar_title)`: every open `symbol_history` row LEFT JOIN active `edgar_company` on the norm (`cik`
+NULL = unmatched; inactive pairs and closed rows never join; one row per open symbol). `usfin
+symbols unmatched [--etf/--no-etf] [--exchange X] [--summary]` prints the match rate overall,
+non-ETF vs ETF and per exchange, then the unmatched symbols. ETFs are reported apart: EDGAR's
+ticker map is mostly operating companies, so 3.3 % of ETFs match (192 of 5 767) and that is
+expected, not a normalization gap. The 14 non-ETFs left unmatched on 2026-10-08 are banks that
+file with their bank regulator, not SEC (ASBH, FRBA, HIFS, NBN, RCBC, SSBI, TOWN), new listings
+not yet in SEC's map (BBCI/BBCIW, PAXGU, WQEY), Skydance class B (SKYD), Noble's tranche 2
+warrants (NE.A) and a preferred SEC does not list (TCBI$B).
 *(Amended in S29.)* Live 2026-10-08: both files are ASCII, CRLF, `text/plain` (349 272 and
 542 931 bytes; 5 627 and 7 663 rows), created 03:03 ET (`Last-Modified` 07:03 GMT agrees, so the
 trailer is New York time). Trailer `File Creation Time: 1008202603:03|||||||` — padded with one `|`
@@ -1591,7 +1615,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S28 Frames and concept map | done | 2026-10-08 | 8808d7d | 32 new (test_frames: cache/TTL with a fake clock, 404 not cached, no `xbrl_fact` writes, period check before any request, no UA → no request, concept-map validation, first-tag pick and tag shown, `frame` column not dates, `I` periods, CLI); suite 564 passed | Live, no 403, `SEC_USER_AGENT` from `.env`, **2 requests** in all: the fixture probe (`usfin http get`, raw 1033, 296 137 bytes, trimmed to 3 of 1 939 points) and `usfin edgar frame us-gaap Revenues USD CY2025Q2` on `data/usfin.duckdb` (migration 016 applied): `fetched` raw 1034, points 1 939 (pts 1 939), top Walmart 177.4 B (fiscal May–Jul fitted to CY2025Q2), UnitedHealth, CVS, Alphabet, Berkshire; 4.0 s; again → `cached`, no request, 0.3 s. `usfin edgar screen revenue CY2025Q2`: **4 224 companies** (3 736 with a ticker name) — tag used: Revenues 1 935, RevenueFromContractWithCustomerExcludingAssessedTax 2 003, RevenueFromContractWithCustomerIncludingAssessedTax 286, SalesRevenueNet 0, SalesRevenueGoodsNet 0 (814 companies report more than one candidate, the first listed wins; Amazon and McKesson show the ASC 606 tag next to Walmart's `Revenues`); query **1.76–1.82 s cold** in the CLI process (whole command 2.1–2.6 s), **0.37–0.49 s warm**, no index (none needed; nothing added to the DB but the empty `frames_cache`). Screen vs frames API for Revenues USD CY2025Q2: 1 939 API points vs 1 935 `xbrl_fact` rows, 1 932 CIKs in both with identical periods; 42 differ in `accn` (the API's frame moved to a 2026 filing the bulk companyfacts member lacks — UDR, HCA, CTS, Lazard; members' newest facts filed 2026-04), 2 in value (Tiptree, Sun Communities), 7 only in the API (stale/factless members: OGE newest fact 2020, Highwoods none), 3 only in `xbrl_fact`. Plan amended (How › SEC EDGAR › Frames: document shape, module, CLI, frames fresher than companyfacts.zip; Concept map: per-concept taxonomy/unit — the plan's tag-list format could not express units or dei — period → rows by the `frame` column, `I` also on short durations, current-view only, query speed). |
 | S29 Nasdaq Trader snapshot | done | 2026-10-08 | e5a4631 | 11 new (test_nasdaq_snapshot); suite 575 passed | Fixtures recorded live (curl, 2026-10-08 07:19 GMT), trimmed to header + rows + trailer byte for byte, plus `nasdaqlisted_truncated.txt` = the real file's first 300 bytes (cut mid-row). `usfin run symbols` on `data/usfin.duckdb` (Mac 14:24 WIB = 03:24 ET on 10-08; migration 017 applied) → `#45 ok rows 13253` in 5.5 s: nasdaqlisted 5 619 rows (8 test issues dropped, 1 293 ETFs, all exchange Q), otherlisted 7 634 (29 test issues dropped, 4 474 ETFs; N 2 900, P 2 753, Z 1 656, A 309, F 16); both snapshot_at 2026-10-08 07:03 UTC (03:03 ET), raw 1035/1036 (349 272 / 542 931 bytes); watermarks `2026-10-08T07:03:00` per file. Second run → `#46 ok rows 0` (same bodies, C2); `usfin reparse symbols` replayed 4 responses, rows 0. No alerts (first snapshot: no swing check). Plan amended (How › Nasdaq Trader): file shape, trailer padding and ET, `NextShares` dropped, exchange codes, `raw_id` column, per-file watermark, trailer check in fetch with alert `snapshot_rejected` (the plan named no rule) and reparse skipping rejected bodies, the symbols alert rules. |
 | S30 Symbol history diff | done | 2026-10-08 | 97017bc | 10 new (test_symbol_history); suite 585 passed | Fixtures are S29's recorded files with rows edited (re-dated trailer, row dropped, real row copied under another symbol, a cell changed). Migration 018 applied to `data/usfin.duckdb`. `usfin run symbols` (07:32 UTC) → `#47 ok rows 0`: same files as S29 (sha256 unchanged, snapshot 2026-10-08 07:03 UTC), and the diff caught up on the stored snapshot: `symbol_diff` nasdaqlisted 5 619 / otherlisted 7 634, first snapshots, no swing check, all diffed; `symbol_history` 13 253 open rows — Q 5 619 (nasdaqlisted); N 2 900, P 2 753, Z 1 656, A 309, F 16 (otherlisted); 0 closed; no symbol open twice; no alerts. Second run `#48 ok rows 0` and `usfin reparse symbols` (8 raw responses, 0.8 s, rebuilt from scratch) left history and diff tables identical (md5 of both tables unchanged) — 0 history changes, as expected with one live snapshot. Plan amended (How › Nasdaq Trader, S30): "changed" also covers market category and financial status (round lot, CQS/NASDAQ spellings not); the gate compares with the previous stored snapshot and uses the job's `row_count_swing` pct (default 2) while the diff base is the last diffed snapshot (a cut-down file costs the restored one a day, a genuine shift never freezes history); `symbol_history` is rebuilt per file on reparse instead of being a raw-id `versioned` table; `rows_upserted` counts snapshot rows only. |
-| S31 Ticker join and unmatched list | todo | | | | |
+| S31 Ticker join and unmatched list | done | 2026-10-08 | | 19 new (test_symbol_match); 2 changed (test_ticker_norm, test_edgar_tickers: `KCAC-UN` now normalizes to `KCAC.U`); suite 604 passed | Fixture `company_tickers_join.json` = 13 verbatim entries of S19's archived company_tickers.json (raw 655) for the companies in the recorded Nasdaq Trader fixtures (A, AAC/-UN/-WT, AIIA/-RI/-UN, ABR/-PD, BRK-B, AAPL, AACG, SPY). **Before** (S19 rule, measured read-only on `data/usfin.duckdb`, 13 253 open symbols vs 10 434 active EDGAR pairs): matched 7 533 (56.8 %); non-ETF 7 341 of 7 486 (98.1 %) — A 293/309, N 2 703/2 821, F 8/9, P 17/17, Z 4/4, Q 4 316/4 326; ETF 192 of 5 767 (3.3 %). Of the 145 unmatched non-ETFs, 131 were Nasdaq `.W` 61 / `.U` 50 / `.R` 20 against EDGAR `-WT`/`-UN`/`-RI` → the suffix map; the rest (12 plain, `TCBI$B`, `NE.A`) have no EDGAR spelling to map. **Run** `usfin symbols unmatched` (applied migration 019, 0.4 s): matched 7 664 of 13 253 (57.8 %); **non-ETF 7 472 of 7 486 (99.8 %)** — A 309/309, N 2 818/2 821, F 8/9, P 17/17, Z 4/4, Q 4 316/4 326; ETF 192 of 5 767 (3.3 %: P 128/2 736, Q 23/1 293, Z 40/1 652, N 1/79, F 0/7 — ETF trusts are mostly not in SEC's ticker map). 14 non-ETFs unmatched: 7 banks filing with bank regulators (ASBH, FRBA, HIFS, NBN, RCBC, SSBI, TOWN), 4 new listings not yet in SEC's map (BBCI, BBCIW, PAXGU, WQEY), SKYD, NE.A (EDGAR `NE-WTA`), TCBI$B. Collisions: none — EDGAR 10 434 rows / 10 434 norms, open history 13 253 / 13 253, view 13 253 rows (no fan-out); 132 `edgar_company.ticker_norm` rewritten (131 matched + NMCO-RI), SQL macro = Python on all 13 253 stored symbols and every stored ticker; `usfin reparse edgar_tickers` → rows 0. Plan amended (How › Nasdaq Trader, How › SEC EDGAR › Tickers): `ticker_norm` maps trailing `.UN`/`.WT`/`.RI` to `.U`/`.W`/`.R` (S19's rule kept EDGAR's letters, so 131 units/warrants/rights could not match); the How example now lists `AAC-UN` → `AAC.U` (C10's examples hold unchanged); SQL macro, view columns, CLI options. |
 | S32 UI: series browser | todo | | | | |
 | S33 UI: EDGAR company and screen | todo | | | | |
 | S34 UI: unmatched symbols | todo | | | | |

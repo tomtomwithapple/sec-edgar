@@ -25,8 +25,11 @@ def test_class_preferred_and_unit_spellings_normalize_alike(symbol, norm):
     assert ticker_norm(symbol) == norm
 
 
-def test_edgar_suffixes_keep_their_letters():
-    # EDGAR's company_tickers.json writes units -UN, warrants -WT, rights -RI (2026-10-08)
-    assert ticker_norm("KCAC-UN") == "KCAC.UN"
-    assert ticker_norm("SLND-WT") == "SLND.WT"
+def test_edgar_suffixes_take_nasdaq_spelling():
+    # EDGAR's company_tickers.json writes units -UN, warrants -WT, rights -RI (2026-10-08);
+    # Nasdaq Trader writes .U, .W, .R (S31)
+    assert ticker_norm("KCAC-UN") == "KCAC.U"
+    assert ticker_norm("SLND-WT") == "SLND.W"
+    assert ticker_norm("OCAC-RI") == "OCAC.R"
+    assert ticker_norm("AAC-UN") == ticker_norm("AAC.U") == ticker_norm("AAC-U") == "AAC.U"
     assert ticker_norm("NONE.") == "NONE."

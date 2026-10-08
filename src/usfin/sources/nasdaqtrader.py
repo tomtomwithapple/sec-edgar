@@ -322,6 +322,50 @@ def sync_history(
     return [_diff_one(con, file, at, pct) for at in pending]
 
 
+# --- join with EDGAR (S31, C10) --------------------------------------------------------------
+
+MATCH = "symbol_edgar_match"
+"""View (migration 019): each open `symbol_history` row with the active `edgar_company` pair of
+the same `ticker_norm`; `cik` NULL = unmatched. Unmatched symbols stay in it, never dropped."""
+
+
+@dataclass(frozen=True)
+class MatchRate:
+    exchange: str
+    etf: bool
+    symbols: int
+    matched: int
+
+
+def match_rates(con: duckdb.DuckDBPyConnection) -> list[MatchRate]:
+    """Open symbols and how many of them meet an EDGAR company, per (exchange, ETF flag)."""
+    rows = con.execute(
+        f"SELECT exchange, coalesce(etf, false), count(DISTINCT symbol),"
+        f" count(DISTINCT symbol) FILTER (WHERE cik IS NOT NULL)"
+        f" FROM {MATCH} GROUP BY ALL ORDER BY ALL"
+    ).fetchall()
+    return [MatchRate(*r) for r in rows]
+
+
+def unmatched(
+    con: duckdb.DuckDBPyConnection, *, etf: bool | None = None, exchange: str | None = None
+) -> list[tuple[str, str, bool, str, str]]:
+    """(symbol, exchange, etf, ticker_norm, name) of every open symbol no active EDGAR company
+    shares a `ticker_norm` with, by symbol; optionally only ETFs / non-ETFs or one exchange."""
+    where, params = ["cik IS NULL"], []
+    if etf is not None:
+        where.append("coalesce(etf, false) = ?")
+        params.append(etf)
+    if exchange is not None:
+        where.append("exchange = ?")
+        params.append(exchange.upper())
+    return con.execute(
+        f"SELECT symbol, exchange, coalesce(etf, false), ticker_norm, name FROM {MATCH}"
+        f" WHERE {' AND '.join(where)} ORDER BY symbol, exchange",
+        params,
+    ).fetchall()
+
+
 # --- job -------------------------------------------------------------------------------------
 
 
