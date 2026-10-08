@@ -190,7 +190,7 @@ def test_first_run_creates_each_table_from_datatypes_with_the_registry_pk(settin
     assert result.status == "ok", result.error
     datasets = fiscal.load_datasets(settings.config_dir)
     tables = _tables(settings)
-    assert set(tables) == {f"fd_{n}" for n in NAMES}
+    assert set(tables) == {f"fd_{n}" for n in NAMES} | {"fd_mts_monthly"}  # + derived view
     for name in NAMES:
         types = api.pages[name][0]["meta"]["dataTypes"]
         cols, rows = tables[f"fd_{name}"]
@@ -394,7 +394,8 @@ def test_reparse_rebuilds_identical_tables_without_http(settings, api, drift):
 
     with store.session(settings.db_path, wait=0) as con:
         for table in built:
-            con.execute(f'DROP TABLE "{table}"')
+            kind = "VIEW" if table == "fd_mts_monthly" else "TABLE"  # the derived view (S37)
+            con.execute(f'DROP {kind} "{table}"')
         result = jobs.reparse(
             con, fiscal.JOB, settings=settings, now=LATER, transport=FailingTransport()
         )

@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S36 done — S18 blocked (FRED_API_KEY) — next: S37 (MTS fix, user decision), then S33
+Status: S37 done — S18 blocked (FRED_API_KEY) — next: S33
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -495,6 +495,38 @@ rows leaves it unset. `then: [auction_xcheck]` was left unset in S8 (chaining a 
 exist would fail every run) and set in S14 with the job. `auctions_query` already carries
 announced auctions dated after today (null results); the cap keeps the watermark at today and
 the lookback refetches them.
+*(Amended in S37.)* **MTS table 1 month by month.** Rule, checked on all 138 releases in
+`fd_mts_table_1` (2015-03-31..2026-08-31, 3 117 rows): each release has exactly two header rows
+(`data_type_cd` S, `record_type_cd` SL, `classification_desc` `FY <year>`, `parent_id` NULL) — the
+prior fiscal year and `FY <record_fiscal_year>` —, under each the monthly lines (`data_type_cd` D,
+`record_type_cd` MTH, `parent_id` = the header's `classification_id`, `classification_desc` = the
+month name) and one Year-to-Date line (T / SL). A monthly line is the calendar month named by its
+`classification_desc` in its header's fiscal year (October–December in the year before); the
+release's current-month line is the one in the `FY <record_fiscal_year>` block whose month is
+`record_calendar_month` — exactly one per release (138 of 138), and `record_calendar_*` always equal
+`record_date`'s. `line_code_nbr` only numbers positions (September is line 270 in its own release
+and line 130 in the next). Every release restates the months of both blocks and **revises them**:
+91 of the 155 months stored moved off their first print, and the prior-year block carries
+revisions too (September 2024: −64.26 bn at first print, −80.29 bn in the 2025-08-31 release), so
+the S37 slice text "current-month line only, prior-year lines excluded" was wrong: first prints
+alone sum FY 2026 to 1 965 627 820 453.44, $36.8 m off Treasury's own Year-to-Date line. The view
+`fd_mts_monthly` (`fiscal.DERIVED`, recreated by `upsert_page` whenever `fd_mts_table_1` is
+written, so run and reparse keep it current; a view, since the table is created on first parse) has
+one row per month keyed by `record_date` (month end): `record_fiscal_year`, `record_calendar_year/
+month`, `classification_desc` (month name), the three amounts from the **newest release carrying
+the month**, `first_gross_rcpt_amt` / `first_gross_outly_amt` / `first_dfct_sur_amt` from the oldest
+(for a month whose own release is stored, its current-month line: `first_release_date` =
+`record_date`), `first_release_date`, `release_date`. Its months sum to Treasury's last
+Year-to-Date line of every fiscal year 2014–2026 to the cent. `fiscal_data.yaml` names it with
+`derived: mts_monthly` on `mts_table_1` (an unknown name is a `ConfigError`); `fiscal.derived_dataset`
+makes it a `Dataset` (pk `record_date`, the source's `jump_fields`) and `fiscal.browsable` lists the
+registry with each derived view after its source. value_jump for key `mts_table_1` reads
+`fd_mts_monthly` as one series (no series columns, ordered by month; subject
+`mts_table_1:current_month_dfct_sur_amt@<month end>`), so a revision of an older month — dated at
+or before the baseline — never fires and a line moving position cannot. Over the year to 2026-10 it
+crosses 100 % on 5 months, each a real swing (Sep surplus → Oct deficit, the April tax surplus and
+back, February, July); threshold kept at 100 %. Fiscal Data tables are still not versioned: a
+month's latest value replaces the earlier one; the first print is kept beside it.
 
 **TreasuryDirect.** Base `https://www.treasurydirect.gov/TA_WS/securities/`. Job
 `treasurydirect` (raw datasets `td_announced`, `td_auctioned`, `td_search`):
@@ -1300,6 +1332,11 @@ its values repeat), so the browser plots exactly what is stored but a monthly de
 a rule (the row whose `classification_desc` is the record month, in the current-FY block). The
 same holds for S9's `value_jump` on `mts_table_1`, which compares same-position rows. Left as is
 for the user to decide; `fd_auctions` (cusip per series) is likewise only a cross-check copy.
+*(Decided by the user and fixed in S37.)* `/series` lists `mts_monthly` right after `mts_table_1`
+(whose title now says its rows are by line position); `/series/fiscal/mts_monthly` is a dataset
+with no series columns, so it plots straight away: one point per month (155, 2013-10..2026-08),
+default field `current_month_dfct_sur_amt`, `first_*` selectable (How › Treasury Fiscal Data, S37
+amendment).
 
 **Ops (C18).** `usfin doctor` (env, config files present, DB path, lock state, raw size, free
 disk vs `USFIN_MIN_FREE_GB`, and the latest bulk projection from `edgar_bulk_estimate`). `deploy/com.tuntun.usfin.serve.plist.example` runs `uv run usfin serve` with
@@ -1644,6 +1681,7 @@ Red: `tests/test_fiscal_mts.py` — from real `mts_table_1` fixtures of two cons
 Green: in `sources/fiscal.py` / a migration (How › Treasury Fiscal Data, Alerts, Web UI): define the series key from the release's own columns (verify on the real `fd_mts_table_1` which columns identify the current-month line and the classification — e.g. `classification_desc`, `record_type_cd`, `print_order_nbr`, `record_calendar_month/year` — and record the rule), expose it as `fd_mts_monthly`, rewire `jump_match`/`series` in `config/fiscal_data.yaml`, and point the series browser at it.
 Run: `uv run usfin run fiscal` and `usfin reparse fiscal` on the real DB; compare the derived FY2026 monthly deficit to the totals Treasury publishes in the same table; open `/series/fiscal/mts_monthly` (or the chosen route) with the server, then stop it.
 Done when: each month has exactly one value per classification, plotted without repeats, and the jump alert no longer fires on line-position shifts.
+*(Amended in S37.)* The only classification in table 1 is the month itself (`classification_desc` is the month name; receipts, outlays and deficit are columns). "Current-month line only, prior-year lines excluded" was wrong: later releases, prior-year block included, revise earlier months, so the view takes each month from the newest release carrying it and keeps the current-month line's first print beside it (How › Treasury Fiscal Data, S37 amendment).
 
 ## Progress
 
@@ -1686,6 +1724,6 @@ Done when: each month has exactly one value per classification, plotted without 
 | S34 UI: unmatched symbols | todo | | | | |
 | S35 Ops: doctor, launchd, README, live smoke | todo | | | | |
 | S36 Fix: reconcile never requests an unpublished daily index | done | 2026-10-08 | e508dd9 | 9 new (test_edgar_dailyindex: before 22:30 ET today's file is not requested, after it is, `published_after` read from edgar.yaml, default 22:30, a 403 for today's index archived with no block and the run ok (watermark stays 10-06), a 403 for a future day's index returned with no block, a 403 for an earlier day's index and one outside `daily-index/` still open the block, and a scheduler catch-up at 03:47 ET 10-08 asks nothing of 10-08, runs ok, opens no block and keeps the watermark 10-07 — red reproduced S32's 403 exactly); suite 627 passed | Probes (`SEC_USER_AGENT` from `.env`, through `http.Client`): a HEAD of `master.20260930.idx` answered **403** (HEAD is refused on Archives; no block persisted, the probe process ended), then GETs of 10-07, 10-06, 10-02, 10-01 (raw 1056–1059, `edgar_probe`) all 200 with `Last-Modified` 22:01:39 / 22:02:38 / 22:03:59 / 22:02:19 ET the same evening → `published_after` 22:30 ET. The two 403 bodies of S32 (raw 1048, 1054) are S3 `AccessDenied` XML, not SEC's rate-limit page. `usfin run edgar_reconcile` live at 03:56 ET 10-08 (before publication): `#51 ok rows 0` in 9 s, 5 requests 10-01..10-07 all 200, **no request for 10-08, no 403, no block**; watermark `master` 2026-10-07 unchanged; `usfin jobs` shows it ok. The chain then made 1 200 more SEC requests, all 200 (normal EDGAR requests work): `edgar_form4 #52 ok rows 1074`, `edgar_sched13 #53 ok rows 788` (open queue form4 4 449 → 4 149, sched13 441 → 141), 7 min 43 s in all. Plan amended: How › SEC EDGAR › Daily index reconcile (SEC answers 403 not 404 for an unpublished day — the S23 text was wrong; publication time 22:02 ET measured, `published_after` 22:30; the client's daily-index 403 rule; a missing past day shows as 403 + block; HEAD refused). |
-| S37 Fix: Monthly Treasury Statement as true monthly series | todo | | | | |
+| S37 Fix: Monthly Treasury Statement as true monthly series | done | 2026-10-08 | | 7 new (test_fiscal_mts, from two real consecutive releases 2026-07-31 / 2026-08-31 recorded with `filter=record_date:eq:` and trimmed to 8–9 lines each: repo registry derives `mts_monthly`, unknown derived name is a ConfigError, one row per month with headers and Year-to-Date lines excluded and prior-year June mapped to June 2025, the August release revising July is a new value with the first print kept, repeat run and reparse leave the view unchanged, value_jump at 0.001 % fires only for August on `fd_mts_monthly`, the browser lists and plots the series one point per month); 2 amended in test_fiscal_job (the table list includes the view; the reparse test drops it as a VIEW); suite 634 passed | Red: all 7 failed for the reason (no `Dataset.derived`, no `fd_mts_monthly`, Observed still on `fd_mts_table_1` by `line_code_nbr`, no index link). On `data/usfin.duckdb` at 04:15 ET 10-08: `usfin run fiscal` `#54 ok rows 0` (6.7 s; `auction_xcheck #55` chained ok; it raised `zero_new_rows` for DTS and Debt to the Penny because the day's first run came before their 16:00 publication — not this slice), `usfin reparse fiscal` 70 raw responses, rows 0, 3.2 s. `fd_mts_monthly`: 155 rows, 155 distinct months 2013-10-31..2026-08-31, no gap; 138 months have `first_release_date` = `record_date` (one current-month line per release); 91 months revised after first print. **FY 2026** (Oct 2025–Aug 2026, 11 months): deficit sum 1 965 591 017 473.53 = Treasury's Year-to-Date line 280 in the 2026-08-31 release to the cent (receipts 4 845 452 239 722.57 and outlays 6 811 043 257 196.10 match too); first prints alone give 1 965 627 820 453.44 (+36.8 m). Every fiscal year 2014–2025 also sums to its last published Year-to-Date exactly. Jumps > 100 % over the year to 2026-10: 5 on the monthly series, all real swings (2025-10, 2026-02, -04, -05, -07). `usfin serve` (then stopped, port 8660 free): `/series` 27 ms lists `mts_monthly` (155 rows) after `mts_table_1` (3 117); `/series/fiscal/mts_monthly` 200 in 31 ms, no picker, one SVG "155 values, low −308.2 bn, high 864.1 bn", no `<script>`; CSV 155 rows, no repeated month, July 2026 432 285 727 964.60 (first print 432 307 874 621.48); `?field=first_dfct_sur_amt` 200. Plan amended: How › Treasury Fiscal Data (S37: the rule and evidence, `fd_mts_monthly`, `derived:`), How › Web UI (S37 note), the S37 slice entry ("current-month line only, prior-year excluded" was wrong — later releases, prior-year block included, revise months; the newest release's value sums to Treasury's totals, first print kept beside it). |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
 - After S32 (user, 2026-10-08): MTS table 1 is derived into true monthly series (S37) rather than plotted/alerted by line position.

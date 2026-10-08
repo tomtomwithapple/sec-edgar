@@ -66,6 +66,9 @@ class Dataset:
     """Columns naming one series for value_jump; default: pk minus date_field."""
     jump_match: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     """Column -> values limiting value_jump to some rows (e.g. balances, not daily flows)."""
+    derived: str | None = None
+    """A view in `DERIVED` (table `fd_<derived>`) built from this table, which alerts and the
+    series browser read as the dataset's series (MTS table 1 -> `mts_monthly`)."""
 
     @property
     def raw_dataset(self) -> str:
@@ -85,6 +88,62 @@ class Page:
     total_pages: int
     types: dict[str, str]
     rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+_MONTHS = (
+    "['October', 'November', 'December', 'January', 'February', 'March', 'April', 'May',"
+    " 'June', 'July', 'August', 'September']"
+)
+MTS_MONTHLY_SQL = f"""
+CREATE OR REPLACE VIEW fd_mts_monthly AS
+WITH fy AS (
+    SELECT record_date, classification_id,
+           TRY_CAST(substr(classification_desc, 4) AS INTEGER) AS fiscal_year
+    FROM fd_mts_table_1
+    WHERE data_type_cd = 'S' AND classification_desc LIKE 'FY %'
+), line AS (
+    SELECT t.record_date AS release_date, fy.fiscal_year,
+           list_position({_MONTHS}, t.classification_desc) AS fm,
+           t.classification_desc, t.current_month_gross_rcpt_amt,
+           t.current_month_gross_outly_amt, t.current_month_dfct_sur_amt
+    FROM fd_mts_table_1 t
+    JOIN fy ON fy.record_date = t.record_date AND fy.classification_id = t.parent_id
+    WHERE t.record_type_cd = 'MTH'
+), dated AS (
+    SELECT *, last_day(make_date(fiscal_year - CAST(fm <= 3 AS INTEGER), (fm + 8) % 12 + 1, 1))
+              AS record_date
+    FROM line WHERE fm IS NOT NULL AND fiscal_year IS NOT NULL
+)
+SELECT record_date,
+       any_value(fiscal_year) AS record_fiscal_year,
+       year(record_date) AS record_calendar_year,
+       month(record_date) AS record_calendar_month,
+       arg_max(classification_desc, release_date) AS classification_desc,
+       arg_max(current_month_gross_rcpt_amt, release_date) AS current_month_gross_rcpt_amt,
+       arg_max(current_month_gross_outly_amt, release_date) AS current_month_gross_outly_amt,
+       arg_max(current_month_dfct_sur_amt, release_date) AS current_month_dfct_sur_amt,
+       arg_min(current_month_gross_rcpt_amt, release_date) AS first_gross_rcpt_amt,
+       arg_min(current_month_gross_outly_amt, release_date) AS first_gross_outly_amt,
+       arg_min(current_month_dfct_sur_amt, release_date) AS first_dfct_sur_amt,
+       min(release_date) AS first_release_date,
+       max(release_date) AS release_date
+FROM dated
+GROUP BY record_date
+"""
+"""MTS table 1 month by month. A release lists the prior fiscal year's twelve months and the
+current fiscal year's months to date, each block under a header row `FY <year>` (`data_type_cd`
+S) and closed by a Year-to-Date line (`record_type_cd` SL); `line_code_nbr` is only the row's
+position. A monthly line (`record_type_cd` MTH) is the calendar month named by its
+`classification_desc` in its header's fiscal year (October-December fall in the year before).
+Every release restates earlier months and revises some (S37: 91 of 155 months moved off their
+first print, through the prior-year block too), so a month's amounts are those of the newest
+release carrying it — each fiscal year's months then sum to Treasury's Year-to-Date line to the
+cent. `first_*` are its first print: for a month the store saw released, the current-month line
+of its own release (`first_release_date` = `record_date`)."""
+
+DERIVED: dict[str, tuple[str, str]] = {"mts_monthly": ("mts_table_1", MTS_MONTHLY_SQL)}
+"""Derived view name -> (source registry entry, CREATE OR REPLACE VIEW statement); the view is
+(re)created whenever its source table is written, so run and reparse keep it current."""
 
 
 def load_datasets(config_dir: Path | str) -> dict[str, Dataset]:
@@ -115,9 +174,38 @@ def load_datasets(config_dir: Path | str) -> dict[str, Dataset]:
                     str(col): tuple(str(v) for v in values)
                     for col, values in (entry.get("jump_match") or {}).items()
                 },
+                derived=str(entry["derived"]) if entry.get("derived") else None,
             )
         except (TypeError, ValueError, AttributeError) as exc:
             raise ConfigError(f"{path}: dataset {name!r}: {exc}") from None
+        derived = out[name].derived
+        if derived is not None and DERIVED.get(derived, ("",))[0] != name:
+            raise ConfigError(
+                f"{path}: dataset {name!r}: unknown derived series {derived!r}"
+                f" (known: {', '.join(f'{k} from {v[0]}' for k, v in DERIVED.items())})"
+            )
+    return out
+
+
+def derived_dataset(dataset: Dataset) -> Dataset:
+    """The derived view of `dataset` as a dataset of its own: one series keyed by record_date."""
+    if dataset.derived is None:
+        raise ValueError(f"fiscal dataset {dataset.name!r} has no derived series")
+    return Dataset(
+        name=dataset.derived,
+        endpoint=f"derived from {dataset.table} (one row per month)",
+        pk=("record_date",),
+        jump_fields=dataset.jump_fields,
+    )
+
+
+def browsable(config_dir: Path | str) -> dict[str, Dataset]:
+    """Registry datasets, each followed by its derived series, by name (the series browser)."""
+    out: dict[str, Dataset] = {}
+    for ds in load_datasets(config_dir).values():
+        out[ds.name] = ds
+        if ds.derived is not None:
+            out[ds.derived] = derived_dataset(ds)
     return out
 
 
@@ -272,6 +360,8 @@ def upsert_page(ctx: "jobs.JobContext", dataset: Dataset, page: Page) -> int:
         raise ConfigError(f"fiscal dataset {dataset.name!r} has no pk in fiscal_data.yaml")
     con = ctx.con
     _ensure_table(ctx, dataset, page.types)
+    if dataset.derived is not None:
+        con.execute(DERIVED[dataset.derived][1])
     if not page.rows:
         return 0
     cols = list(page.types)
@@ -358,6 +448,15 @@ def _observed(settings: Settings) -> dict[str, alerts.Observed]:
     """Alert rules' view of each registry entry: its table, date field, series and jump fields."""
     out = {}
     for ds in load_datasets(settings.config_dir).values():
+        if ds.derived is not None:
+            # the rules read the derived series (MTS: month by month, not line positions)
+            view = derived_dataset(ds)
+            out[ds.name] = alerts.Observed(
+                table=view.table,
+                date_column=view.date_field,
+                values=view.jump_fields,
+            )
+            continue
         out[ds.name] = alerts.Observed(
             table=ds.table,
             date_column=ds.date_field,

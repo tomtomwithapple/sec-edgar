@@ -10,7 +10,9 @@ column names) are checked against the table's own columns first and quoted.
 - **Fiscal Data**: one series = one value of the registry's `series` columns (default pk minus
   the date field), e.g. a DTS account type or an exchange-rate country-currency; without a pick the
   page lists the series (a single `jump_match` value per series column is the default pick).
-  The plotted field is any numeric column (`?field=`; default the first `jump_fields`).
+  The plotted field is any numeric column (`?field=`; default the first `jump_fields`). A
+  registry entry's derived view (`mts_monthly`: MTS table 1 month by month) is listed after it
+  and browsed like a dataset with no series columns.
 - **Auctions** (`tsy_security`, the source of truth): one series = security type × term as
   auctioned × kind (nominal / TIPS / FRN / CMB, from the payload flags) — a 10-year TIPS is not a
   10-year note, and a reopening ("9-Year 10-Month") is its own term. The plotted field defaults to
@@ -59,6 +61,10 @@ AUCTION_COLUMNS = (
     "maturity_date",
 )
 INDEX_COLUMNS = ("source", "id", "title", "rows", "first", "last")
+_NOTES = {
+    "auctions": " (cross-check copy; browse by term under auctions)",
+    "mts_table_1": " (release rows by line position; the monthly series is mts_monthly)",
+}
 
 
 def _q(name: str) -> str:
@@ -95,7 +101,7 @@ def index(con: duckdb.DuckDBPyConnection, config_dir) -> list[dict[str, Any]]:
         )
     ):
         rows.append({"source": "bls", **r, "href": f"/series/bls/{r['id']}"})
-    for ds in fiscal.load_datasets(config_dir).values():
+    for ds in fiscal.browsable(config_dir).values():
         stats = {"rows": 0, "first": None, "last": None}
         if _table_exists(con, ds.table):
             col = _q(ds.date_field)
@@ -107,12 +113,7 @@ def index(con: duckdb.DuckDBPyConnection, config_dir) -> list[dict[str, Any]]:
             {
                 "source": "fiscal",
                 "id": ds.name,
-                "title": ds.endpoint
-                + (
-                    " (cross-check copy; browse by term under auctions)"
-                    if ds.name == "auctions"
-                    else ""
-                ),
+                "title": ds.endpoint + _NOTES.get(ds.name, ""),
                 **stats,
                 "href": f"/series/fiscal/{ds.name}",
             }

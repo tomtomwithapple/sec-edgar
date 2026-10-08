@@ -219,7 +219,7 @@ def create_app(
 
     @app.get("/series/fiscal/{name}")
     def fiscal_page(name: str, request: Request) -> Response:
-        dataset = fiscal.load_datasets(settings.config_dir).get(name)
+        dataset = fiscal.browsable(settings.config_dir).get(name)
         if dataset is None:
             raise HTTPException(404, f"unknown Fiscal Data dataset {name!r}")
         params = request.query_params
