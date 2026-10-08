@@ -14,6 +14,13 @@ a calendar day is later than its last `ok` run's `started_at`; a fire APSchedule
 write `job_run` or `alert`. The scheduler keeps it in `pending_locked` (in memory) and stores one
 `db_locked` alert per job and New York day of the attempt (subject = job) as soon as a session
 opens: before the next run, or from a retry every `FLUSH_RETRY` until the DB is free.
+
+Retry: after every run of a job with a `retry` hook (BLS: a release day whose new period is
+missing), the hook says when to run it again today; that becomes a one-shot `DateTrigger` job id
+`<job>_retry` (`replace_existing=True`) on the same worker, whose run is `scheduled` and asks the
+hook again. A None answer cancels a pending retry (the hook raises its own alerts when it gives
+up). The retry job re-adds itself while APScheduler removes the fired one, but both happen under
+the scheduler's job-store lock, so the new one is never lost.
 """
 
 import itertools
@@ -259,7 +266,46 @@ class Scheduler:
             transport=self.transport,
         )
         self._note_locked(result, trigger, now)
+        if result.run_id is not None:
+            self._plan_retry(name)
         return result
+
+    # retry
+
+    def retry(self, name: str) -> jobs.RunResult:
+        """The `<job>_retry` target: run `name` again (trigger `scheduled`)."""
+        return self._run(name, "scheduled")
+
+    def _plan_retry(self, name: str) -> datetime | None:
+        """Ask the job's `retry` hook; (re)schedule `<name>_retry` or cancel it."""
+        hook = self.registry.get(name).retry
+        if hook is None:
+            return None
+        retry_id = f"{name}_retry"
+        try:
+            with store.session(self.settings.db_path, wait=self.wait) as con:
+                first = alerts.max_id(con)
+                at = hook(con, self.settings, self.clock())
+                alerts.notify(con, self.settings, since_id=first)
+        except store.DatabaseLocked as exc:
+            log.error("job %s: retry not planned, database busy (%s)", name, exc)
+            return None
+        if at is None:
+            if self.aps.get_job(retry_id) is not None:
+                self.aps.remove_job(retry_id)
+            return None
+        log.info("job %s: retry at %s", name, at.astimezone(ET))
+        self.aps.add_job(
+            self.retry,
+            "date",
+            run_date=at,
+            args=[name],
+            id=retry_id,
+            name=f"{name} (retry)",
+            replace_existing=True,
+            misfire_grace_time=MISFIRE_GRACE,
+        )
+        return at
 
     def _skip(self, name: str, reason: str, now: datetime) -> jobs.RunResult:
         try:

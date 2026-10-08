@@ -3,7 +3,7 @@ import logging
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import duckdb
 import typer
@@ -12,7 +12,7 @@ import uvicorn
 from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
-from usfin.sources import bls, fiscal, treasurydirect
+from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -325,7 +325,9 @@ def td_backfill(
     try:
         first = date.fromisoformat(start)
     except ValueError:
-        raise typer.BadParameter(f"{start!r} is not a YYYY-MM-DD date", param_hint="--from") from None
+        raise typer.BadParameter(
+            f"{start!r} is not a YYYY-MM-DD date", param_hint="--from"
+        ) from None
     settings = load_settings()
     years: dict[int, list[int]] = {}
 
@@ -398,6 +400,39 @@ def bls_validate() -> None:
     typer.echo(f"{good} of {len(checks)} series ok")
     if good != len(checks):
         raise typer.Exit(1)
+
+
+@bls_app.command("releases")
+def bls_releases(
+    next_n: int = typer.Option(5, "--next", min=1, help="How many releases to list."),
+    start: str | None = typer.Option(
+        None, "--from", help="First New York date (YYYY-MM-DD); default today."
+    ),
+    every: bool = typer.Option(
+        False, "--all", help="Every release, not only those of config/bls.yaml series."
+    ),
+) -> None:
+    """List the next BLS releases stored by job `bls_calendar`, with the series they publish."""
+    try:
+        first = date.fromisoformat(start) if start else datetime.now(scheduler.ET).date()
+    except ValueError:
+        raise typer.BadParameter(
+            f"{start!r} is not a YYYY-MM-DD date", param_hint="--from"
+        ) from None
+    series = bls.load_series(load_settings().config_dir)
+    with _db_session(apply_migrations=True) as con:
+        count, lo, hi = bls_calendar.coverage(con)
+        found = bls_calendar.next_releases(con, series, start=first, n=next_n, every=every)
+    if not count:
+        typer.echo("no releases stored; run `usfin run bls_calendar`", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{count} releases stored, {lo}..{hi}")
+    for release, ids in found:
+        at = release.released_at.replace(tzinfo=UTC).astimezone(scheduler.ET)
+        typer.echo(
+            f"{release.release_date:%Y-%m-%d %a} {at:%H:%M}  {release.release_name}"
+            + (f"  {', '.join(ids)}" if ids else "")
+        )
 
 
 alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")

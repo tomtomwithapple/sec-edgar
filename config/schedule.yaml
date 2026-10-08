@@ -49,8 +49,16 @@ jobs:
         # zero_new_rows
         stale_watermark: {n: 3}
   bls:
-    cron: "0 9 * * *"              # BLS releases at 08:30 ET
+    cron: "0 9 * * *"              # BLS releases at 08:30 ET (JOLTS 10:00); in serve, a release
+                                   # day without the new period retries every 15 min (10 with
+                                   # BLS_API_KEY) to 12:00, then raises stale_watermark itself
     calendar: federal
-    # due days are BLS release days (S17, from the release calendar); until then none, so no
-    # zero_new_rows or stale_watermark
+    due: {releases: bls_release}   # each series' release days (bls.yaml release, bls_release)
+    alerts:
+      # no zero_new_rows / stale_watermark rules: the retry decides on release days, and the
+      # watermark is a period (2026-M08), not a date
+      value_jump: {pct: 25}        # overridden per series by bls.yaml jump_pct
+  bls_calendar:
+    cron: "0 6 * * mon"            # the release schedule; calendar_stale when it reaches < 30 days
+    calendar: any
     due: none

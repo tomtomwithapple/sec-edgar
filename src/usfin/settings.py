@@ -20,6 +20,7 @@ class Settings:
     lock_wait: float
     sec_user_agent: str | None
     bls_api_key: str | None
+    bls_contact_email: str | None
     fred_api_key: str | None
     alert_webhook_url: str | None
 
@@ -51,6 +52,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         lock_wait=lock_wait,
         sec_user_agent=get("SEC_USER_AGENT"),
         bls_api_key=get("BLS_API_KEY"),
+        bls_contact_email=get("BLS_CONTACT_EMAIL"),
         fred_api_key=get("FRED_API_KEY"),
         alert_webhook_url=get("ALERT_WEBHOOK_URL"),
     )

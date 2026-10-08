@@ -7,8 +7,13 @@ transport errors are retried with exponential backoff (1, 2, 4, 8 s; `Retry-Afte
 at most `MAX_TRIES` attempts. The final response, whatever its status, is archived through the
 raw store before the call returns or raises. A SEC 403 opens a process-wide block window
 (`SEC_BLOCK_SECONDS`) and raises `SecBlocked`; nothing sleeps through it.
+
+www.bls.gov (the release calendar; not api.bls.gov) answers 403 to any User-Agent without a
+contact email, and also to one that carries a URL (probed 2026-10-08), so requests to it send
+`usfin/<version> (<BLS_CONTACT_EMAIL>)`; without that setting → `ConfigError`, no request.
 """
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -29,6 +34,8 @@ SEC_BLOCK_SECONDS = 600.0
 TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 USFIN_USER_AGENT = f"usfin/{__version__} (+https://github.com/tomtomtomdev/sec-edgar)"
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+BLS_WWW_HOSTS = frozenset({"www.bls.gov"})
+_EMAIL = re.compile(r"[^@\s()<>/]+@[^@\s()<>/]+\.[^@\s()<>/]+")
 
 
 class HttpError(Exception):
@@ -151,7 +158,7 @@ class Client:
             )
         req_headers = {
             **policy.headers,
-            "User-Agent": self.settings.sec_user_agent if sec else USFIN_USER_AGENT,
+            "User-Agent": self._user_agent(host, sec),
             **(headers or {}),
         }
         request = self._http.build_request(
@@ -206,6 +213,19 @@ class Client:
                 )
             return raw_id, response
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _user_agent(self, host: str, sec: bool) -> str:
+        if sec:
+            return self.settings.sec_user_agent
+        if host in BLS_WWW_HOSTS:
+            email = self.settings.bls_contact_email
+            if not email or not _EMAIL.fullmatch(email):
+                raise ConfigError(
+                    f"BLS_CONTACT_EMAIL must be set to a contact email to request {host} "
+                    f"(bls.gov refuses clients without one); got {email!r}"
+                )
+            return f"usfin/{__version__} ({email})"
+        return USFIN_USER_AGENT
 
     def _archive(
         self, response: httpx.Response, *, source: str, dataset: str, request_sha: str

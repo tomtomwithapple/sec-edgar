@@ -72,6 +72,10 @@ class Job:
     compute: Callable[["JobContext", str], int] | None = None
     """A derived job (no source of its own): `compute(ctx, key) -> rows` runs after the key's
     fetch and parses, in its own transaction, and reads tables other jobs filled."""
+    retry: Callable[[duckdb.DuckDBPyConnection, Settings, datetime], datetime | None] | None = None
+    """In `usfin serve`, after each run: `retry(con, settings, now)` returns when to run the job
+    again today (a one-shot `<name>_retry`), or None (and raises its own alerts when it gives up).
+    BLS: a release day whose new period has not arrived yet."""
 
     def key_list(self, ctx: "JobContext") -> list[str]:
         return list(self.keys(ctx) if callable(self.keys) else self.keys)
@@ -116,6 +120,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.treasurydirect",
     "usfin.sources.auction_xcheck",
     "usfin.sources.bls",
+    "usfin.sources.bls_calendar",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 

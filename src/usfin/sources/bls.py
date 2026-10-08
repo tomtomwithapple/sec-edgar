@@ -22,12 +22,22 @@ differ from the latest row for that period as of the response's `fetched_at`, wh
 row's `first_seen_at`. A "-" period is stored with `value` NULL. Every `bls_timeseries` response is
 parsed the same way — `bls validate`'s included — so `usfin reparse bls` rebuilds the same table;
 a response that is not HTTP 200 + `REQUEST_SUCCEEDED` stores nothing.
+
+Release days (S17): each series names the BLS release that publishes it (`release` in bls.yaml,
+the SUMMARY of its event in the release calendar that job `bls_calendar` stores in
+`bls_release`). Those days are the series' due days (`due: {releases: bls_release}` in
+schedule.yaml) and drive the release-day retry: in `usfin serve`, after a `bls` run on a release
+day of a series whose watermark has not moved since the day's first run, the job runs again in
+10 minutes (15 without `BLS_API_KEY`, to stay under v1's 25 queries a day) as long as that is no
+later than 12:00 New York; past that, each such series raises `stale_watermark`. `value_jump`
+checks each new period against the previous one, at the series' `jump_pct`, on the dated view
+`bls_observation_dated` (`period_date` = the first day of a monthly period).
 """
 
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -35,7 +45,7 @@ from typing import Any
 import duckdb
 import yaml
 
-from usfin import http, jobs, raw
+from usfin import alerts, http, jobs, raw
 from usfin.settings import ConfigError
 
 V1_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
@@ -46,6 +56,12 @@ TABLE = "bls_observation"
 LIMITS = {"v1": (25, 10), "v2": (50, 20)}
 """(series per query, years per query) for each API version."""
 _OK = "REQUEST_SUCCEEDED"
+DATED_VIEW = "bls_observation_dated"
+RELEASE_TABLE = "bls_release"
+DAY_SOURCE = "bls_release"
+RETRY_UNTIL = time(12, 0)
+RETRY_EVERY = timedelta(minutes=10)
+RETRY_EVERY_KEYLESS = timedelta(minutes=15)
 
 
 class BlsError(Exception):
@@ -67,6 +83,8 @@ class Series:
     units: str
     decimals: int
     jump_pct: float
+    release: str | None = None
+    """The BLS release (calendar SUMMARY) that publishes this series."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +130,7 @@ def load_series(config_dir: Path | str) -> dict[str, Series]:
                 units=str(entry["units"]),
                 decimals=int(entry["decimals"]),
                 jump_pct=float(entry["jump_pct"]),
+                release=str(entry["release"]).strip() if entry.get("release") else None,
             )
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"{path}: series {sid!r}: {exc}") from None
@@ -388,6 +407,91 @@ def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
     return rows
 
 
+# --- release days, alerts and the release-day retry --------------------------------------------
+
+
+def period_date(watermark: str) -> str | None:
+    """`2026-M08` -> `2026-08-01` (the date `bls_observation_dated` gives that period)."""
+    try:
+        year, month = watermark.split("-M")
+        return date(int(year), int(month), 1).isoformat()
+    except ValueError:
+        return None
+
+
+def release_days(con: duckdb.DuckDBPyConnection, settings, series_id: str) -> frozenset[date]:
+    """Days the release that publishes `series_id` comes out, as stored in `bls_release`."""
+    series = load_series(settings.config_dir).get(series_id)
+    if series is None or series.release is None:
+        return frozenset()
+    exists = con.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [RELEASE_TABLE]
+    ).fetchone()[0]
+    if not exists:
+        return frozenset()
+    rows = con.execute(
+        f"SELECT release_date FROM {RELEASE_TABLE} WHERE release_name = ?", [series.release]
+    ).fetchall()
+    return frozenset(d for (d,) in rows)
+
+
+alerts.DAY_SOURCES[DAY_SOURCE] = release_days
+
+
+def _observed(settings) -> dict[str, alerts.Observed]:
+    return {
+        sid: alerts.Observed(
+            table=DATED_VIEW,
+            date_column="period_date",
+            match={"series_id": (sid,)},
+            series=("series_id",),
+            values=("value",),
+            jump_pct=s.jump_pct,
+            watermark_date=period_date,
+        )
+        for sid, s in load_series(settings.config_dir).items()
+    }
+
+
+def waiting(con: duckdb.DuckDBPyConnection, settings, today: date) -> list[Series]:
+    """Series released on `today` whose watermark has not moved since the day's first run."""
+    baseline = alerts.day_baseline(con, "bls", today)
+    current = jobs.get_watermarks(con, "bls")
+    return [
+        s
+        for sid, s in load_series(settings.config_dir).items()
+        if sid in baseline  # no baseline: a first load, nothing to wait for
+        and current.get(sid) == baseline[sid]
+        and today in release_days(con, settings, sid)
+    ]
+
+
+def retry(con: duckdb.DuckDBPyConnection, settings, now: datetime) -> datetime | None:
+    """When to run `bls` again today, or None; past 12:00 ET raises `stale_watermark` instead."""
+    local = now.astimezone(jobs.ET)
+    late = waiting(con, settings, local.date())
+    if not late:
+        return None
+    at = now + (RETRY_EVERY if settings.bls_api_key else RETRY_EVERY_KEYLESS)
+    if at <= datetime.combine(local.date(), RETRY_UNTIL, tzinfo=jobs.ET):
+        return at
+    for s in late:
+        alerts.raise_alert(
+            con,
+            job="bls",
+            rule="stale_watermark",
+            subject=s.series_id,
+            detail={
+                "watermark": jobs.get_watermarks(con, "bls").get(s.series_id),
+                "release": s.release,
+                "release_date": local.date().isoformat(),
+                "retried_until": RETRY_UNTIL.strftime("%H:%M"),
+            },
+            now=now,
+        )
+    return None
+
+
 JOB = jobs.REGISTRY.register(
     jobs.Job(
         name="bls",
@@ -395,6 +499,8 @@ JOB = jobs.REGISTRY.register(
         fetch=_fetch,
         parsers={RAW_DATASET: _parse},
         versioned=(TABLE,),
+        observed=_observed,
+        retry=retry,
     )
 )
 """All configured series in one query; versioned rows in `bls_observation`."""

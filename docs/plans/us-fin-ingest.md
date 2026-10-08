@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S16 done — next: S17
+Status: S17 done — next: S18
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -231,10 +231,12 @@ deprecated in favour of `httpx2`; httpx2 is not in the stack, so pytest filters 
   `America/New_York` (`zoneinfo`). Dates from sources stay `DATE`.
 - Secrets and paths only via env / `.env` (see `.env.example`): `SEC_USER_AGENT` (required for
   EDGAR; the user sets it), `BLS_API_KEY` (optional), `FRED_API_KEY` (ALFRED slice only),
+  `BLS_CONTACT_EMAIL` (required for www.bls.gov, the release calendar — added in S17),
   `ALERT_WEBHOOK_URL` (optional), `USFIN_DB` (default `data/usfin.duckdb`), `USFIN_RAW`
   (default `raw/`), `USFIN_CONFIG` (default `config/`), `USFIN_LOCK_WAIT` (seconds, default 600),
   `USFIN_MIN_FREE_GB` (default 10; free-disk floor for bulk downloads).
-- Non-SEC hosts get `User-Agent: usfin/<version> (+https://github.com/tomtomtomdev/sec-edgar)`.
+- Non-SEC hosts get `User-Agent: usfin/<version> (+https://github.com/tomtomtomdev/sec-edgar)`,
+  except www.bls.gov: `usfin/<version> (<BLS_CONTACT_EMAIL>)` (amended in S17: it 403s the URL form).
 - Commit style follows the sibling repos: `S<n>: <what the slice found>`; plan-only commits
   `plan(us-fin-ingest): …`.
 
@@ -617,6 +619,45 @@ raw dataset `bls_timeseries`, so it now stores observations too** — otherwise 
 would date values later than `usfin reparse bls`, which replays the validate response first. Schedule:
 `bls` `0 9 * * *` federal, `due: none` until S17 supplies release days; `value_jump` (`jump_pct`) is
 not wired yet: `bls_observation` has no date column for `alerts.Observed` (S17 decides).
+*(Amended in S17.)* **iCal URL: `https://www.bls.gov/schedule/news_release/bls.ics`** ("Economic
+News Release Schedule", linked from bls.gov/schedule/news_release/). Fetched 2026-10-08: 313 VEVENTs,
+2025-01-03..2026-12-30, `text/calendar`, LF line ends, no folded lines, every release at 08:30 or
+10:00 ET (`DTSTART;TZID=US-Eastern:`), some SUMMARYs with trailing blanks, no (date, name)
+repeats. **www.bls.gov answers 403 to the plan's `usfin/<version> (+https://…)` User-Agent** —
+with or without browser-style `Accept`/`Accept-Language`/`Sec-Fetch-*` headers or a `From:` header,
+and to any UA that carries a URL, even next to an email; it answers 200 to a UA that carries a
+contact email and no URL (`usfin/0.1.0 (contact@example.com)` passed), or to a full Chrome header
+set (not used: impersonation). api.bls.gov still takes the usfin UA (S15). So requests to
+`www.bls.gov` (code-decided host list `http.BLS_WWW_HOSTS`) send `usfin/<version> (<email>)` from the
+new env var **`BLS_CONTACT_EMAIL`**; unset or not an email → `ConfigError`, no request (like
+`SEC_USER_AGENT`). Release-name mapping (`release` per series in `bls.yaml`, all four present in the
+file): CPI and core CPI ← "Consumer Price Index"; PPI final demand ← "Producer Price Index"; payrolls,
+UNRATE and AHE ← "Employment Situation"; JOLTS ← "Job Openings and Labor Turnover Survey" (released
+at **10:00**, after the 09:00 `bls` run, so its release days always need a retry). Job `bls_calendar`
+(`usfin.sources.bls_calendar`, Mon 06:00 `any`, raw dataset `bls_ics`, key `schedule`, no
+watermark: a full file) parses VEVENT blocks only (unfolded, unescaped, stripped; `US-Eastern` →
+America/New_York, a `Z` time UTC, an unknown TZID or an event without DTSTART/SUMMARY fails the key)
+into `bls_release(release_date, release_name, released_at naive UTC, raw_id)` PK (`release_date,
+release_name`) (migration `006_bls_release.sql`); each file is authoritative for its own date range
+(a moved release loses its old date), a refetch changes nothing, `usfin reparse bls_calendar`
+rebuilds it. `calendar_stale` (subject `bls_release`) fires when no stored release is more than 30
+days ahead — also after a failed fetch, since the stored calendar still ages. **Due days = release
+days:** schedule.yaml `bls: due: {releases: bls_release}`, a new due-rule kind: `alerts.DAY_SOURCES`
+maps a name to `fn(con, settings, key) -> days` (`bls.release_days`: the dates of the key's release in
+`bls_release`), resolved per key when the rules run. **`value_jump` wired** via view
+`bls_observation_dated` (migration 006: the current version of each monthly period with
+`period_date` = first of the month, M13 left out) and two new `alerts.Observed` fields: `jump_pct`
+(per-key threshold, from `bls.yaml`, overriding the rule's `pct: 25`) and `watermark_date` (the
+baseline `2026-M08` → `2026-08-01`). bls has no `zero_new_rows`/generic `stale_watermark` rule: the
+watermark is a period, not a date, and the retry decides on release days. **Retry:** `Job.retry(con,
+settings, now) -> datetime | None`, asked by the scheduler after every logged run in `usfin serve`;
+bls answers "now + 10 min (15 without `BLS_API_KEY`)" while some series released today has the same
+watermark as before the day's first run and that time is ≤ 12:00 ET; past it, each such series
+raises `stale_watermark` (subject = series, detail `{watermark, release, release_date,
+retried_until}`) and no retry. The scheduler (re)adds one-shot `DateTrigger` id `bls_retry`
+(`replace_existing=True`, same single worker, run trigger `scheduled`, guard applies); a None answer
+removes a pending one. `usfin run bls` from a shell never retries. `usfin bls releases [--next 5]
+[--from DATE] [--all]` lists stored releases of configured series (`--all`: every release).
 
 **SEC EDGAR.** All requests via `http.Client` with the SEC bucket. CIK always 10-digit
 zero-padded in URLs, stored as BIGINT.
@@ -1128,7 +1169,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S14 Auction cross-check | done | 2026-10-08 | f6b4cde | 14 new (test_auction_xcheck); suite 275 passed | Before defining a mismatch, the real data: `fd_auctions` 7 894 rows (2000-01-03..2026-10-08) join `tsy_security` 1:1 on (cusip, auction_date), 0 one-sided either way in the overlap; every one of the five fields agrees on every pair (nulls included — the 3 2026-10-08 auctions and the 2001-09-11 bill have no results on either side); FD writes rates "3.735000", TD "5.3000"; 2 214 CUSIPs are reopened, so the CUSIP alone is no key. `usfin run fiscal` on `data/usfin.duckdb` (Mac clock 21:35 ET on 10-07): `fiscal #16 ok rows 0` then `auction_xcheck #17 ok rows 7894 (chained)` in 0.09 s, migration 003 applied; `auction_xcheck` = **7 894 matched, 0 mismatch, 0 pending, 0 fd_only, 0 td_only**; `usfin alerts` showed no `auction_mismatch` (live mismatch count 0). `usfin run auction_xcheck` again: `#18 ok rows 0`. On a scratch copy with a TD yield set to 5.31 (91282CRF0 10-07), an FD offering +1 bn (FRN reopening 91282CRD5 09-23), one bill's FD rates nulled and one bill CUSIP's 3 FD auctions deleted: `rows 6`, exactly 2 `auction_mismatch` alerts (one per pair, the right fields), 1 pending, 3 td_only, 7 888 matched; a second run raised no more and changed 0 rows. Plan amended: Jobs gains `Job.compute` for derived jobs (a no-source job has no raw responses for parsers, so the runner needed a hook); How › TreasuryDirect gains the comparison rules (pending for one-sided fields, overlap for one-sided rows, 6-decimal rate rounding, re-alert per day) and table `auction_xcheck`; Fiscal Data's `then: [auction_xcheck]` is now set. |
 | S15 BLS client and series config | done | 2026-10-08 | bffa8ed | 13 new (test_bls_client); suite 288 passed | No `BLS_API_KEY` (no `.env`, unset in env), so keyless **v1**; 2 live requests in all (one curl with the client's User-Agent to record the fixture — the seven IDs plus a made-up `XXX000BOGUS`, 2025–2026 — and the Run). No 403: the `usfin/<version>` UA was enough, no extra header. `usfin bls validate` on `data/usfin.duckdb` (migration 004 applied, raw_id 648, 13 916 bytes, `text/plain`): all **7 of 7 ok** — CUSR0000SA0 2026 M08 (19 values), CUSR0000SA0L1E 2026 M08 (19), WPSFD4 2026 M08 (20), CES0000000001 2026 M09 (21), LNS14000000 2026 M09 (20), CES0500000003 2026 M09 (21), JTS000000000000000JOL 2026 M08 (20); exit 0; `bls_series` 7 rows. The 19/20 counts are the 2025 M10 gap: BLS publishes `"-"` with footnote X/9 (lapse in appropriations) for CPI, core CPI and UNRATE. In the recording `XXX000BOGUS` came back with empty data and "Series does not exist for Series XXX000BOGUS" under a `REQUEST_SUCCEEDED` status, which is how validate flags it. All seven plan IDs were right. Plan amended (How › BLS): bls.yaml shape and decimals, client API, migration 004, the live v1 response facts (unknown IDs don't fail the request, `-` values, stray catalog message, text/plain); v2 is not recorded (no key). |
 | S16 BLS versioned observations | done | 2026-10-08 | 38691e1 | 20 new (test_bls_versions); suite 308 passed | No `BLS_API_KEY`, keyless v1; 2 live requests (the two runs). On `data/usfin.duckdb` (Mac clock 21:49 ET on 10-07): migration 005 applied; S15's `bls validate` response (raw 648, 21:42 ET) is already raw dataset `bls_timeseries`, so `usfin reparse bls` first stored it: **143 rows** (140 published values + the 3 `-` 2025 M10 gaps for CPI, core CPI, UNRATE, value NULL with footnote X/9), all `first_seen_at` 2026-10-08 01:42:35 UTC. `usfin run bls` → `bls #19 ok rows 0`, again → `#20 ok rows 0` (raw 649, 650: one request each for the seven keys, byte-identical 13 916-byte bodies, so even the first run had nothing new); watermarks CPI/core CPI/PPI/JOLTS 2026-M08, payrolls/UNRATE/AHE 2026-M09; no alerts. `bls_as_of(now())` for CPI: 2026 M08 334.131, M07 332.813, M06 332.568, M05 333.979; `bls_as_of(DATE '2026-10-07')` returns all 143 (21:42 ET is that New York day), `DATE '2026-10-06'` none. `usfin reparse bls` replayed 3 raw responses, deleted 143 and rebuilt 143, table md5 unchanged (960bd8ec…). `usfin schedule`: bls 09:00 on 10-08, 10-09, 10-13 (Columbus Day skipped). Plan amended (How › BLS): `-` periods stored as NULL versions (planning decision), migration 005 and the macro's argument types, one request for seven keys via the new `JobContext.memo` (Jobs), non-OK replies store nothing, **`bls validate` now stores observations** — it archives under the job's dataset, so without that a run after a validate dates values later than reparse does; `due: none` until S17, `value_jump` not wired (no date column). |
-| S17 BLS release calendar and retry | todo | | | | |
+| S17 BLS release calendar and retry | done | 2026-10-08 | | 26 new (test_bls_calendar); suite 334 passed | www.bls.gov 403s the plan's `usfin/<version> (+https://…)` User-Agent (also with browser Accept/Sec-Fetch headers or `From:`, and any UA carrying a URL); a UA with a contact email and no URL gets 200, so www.bls.gov now gets `usfin/<version> (<BLS_CONTACT_EMAIL>)` — new env var, set by the user in `.env` (was a block until then; a first run without it on `data/usfin.duckdb` failed #21 with ConfigError, no request, and raised alert #2 `calendar_stale`). Live with it set (Mac clock 2026-10-07 ET evening; migration 006 applied): `usfin run bls_calendar` → `#22 ok rows 313` (raw 651, 80 672 bytes `text/calendar`), again → `#23 ok rows 0` (C2); `usfin reparse bls_calendar` replayed 2 responses, 0 changes. **313 releases, 2025-01-03..2026-12-30**; 92 events map to configured series. `usfin bls releases --next 5`: 2026-10-14 08:30 CPI (CUSR0000SA0, CUSR0000SA0L1E); 10-15 08:30 PPI (WPSFD4); 11-03 **10:00** JOLTS; 11-06 08:30 Employment Situation (CES0000000001, LNS14000000, CES0500000003); 11-10 08:30 CPI. Calendar reaches 84 days ahead (> 30), so alert #2 was acked. `usfin schedule`: bls_calendar Mon 06:00 (10-12, 10-19, …). No api.bls.gov data request in this slice; retry tested with fakes. Plan amended (How › BLS, Conventions): iCal URL, the bls.gov User-Agent rule + `BLS_CONTACT_EMAIL`, release mapping (JOLTS releases at 10:00, after the 09:00 run, so its days always retry), `bls_release` + `bls_observation_dated` (migration 006), due days = release days (`due: {releases: bls_release}`, `alerts.DAY_SOURCES`), value_jump wired with per-series `jump_pct` and a period→date baseline (`Observed.jump_pct`, `watermark_date`), no generic zero_new_rows/stale_watermark for bls (period watermark; the retry raises `stale_watermark` past 12:00 ET), `Job.retry` + one-shot `bls_retry`. |
 | S18 ALFRED backfill | todo | | | | |
 | S19 EDGAR tickers and ticker_norm | todo | | | | |
 | S20 EDGAR submissions | todo | | | | |

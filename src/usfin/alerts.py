@@ -4,8 +4,9 @@ Rules are configured per job in `config/schedule.yaml` and run per watermark key
 
     jobs:
       <job>:
-        due: federal                 # due-day rule: a calendar, none, or
-                                     # {calendar: federal, nth_of_month: 8}
+        due: federal                 # due-day rule: a calendar, none,
+                                     # {calendar: federal, nth_of_month: 8}, or
+                                     # {releases: bls_release} (days a source registered)
         alerts:                      # rule -> parameters, for every key
           zero_new_rows: {}
           stale_watermark: {n: 2}
@@ -15,6 +16,8 @@ Rules are configured per job in `config/schedule.yaml` and run per watermark key
           <key>: {due: none, value_jump: {pct: 50}}
 
 A job tells the rules where a key's rows live with `Job.observed` (`{key: Observed}`).
+A `{releases: <name>}` due rule takes each key's due days from `DAY_SOURCES[<name>]` (a source
+registers it: `bls_release` = the release days of the key's series in the BLS calendar).
 
 - `zero_new_rows`: on a due day, no row of the key dated after the key's watermark *as it stood
   before the job's first run that New York day* (so a repeat run the same day does not fire).
@@ -79,19 +82,54 @@ class Observed:
     """Extra column -> values filter for value_jump only (e.g. balances, not daily flows)."""
     snapshot: bool = False
     """Rows are full-file snapshots grouped by `date_column` (row_count_swing applies)."""
+    jump_pct: float | None = None
+    """This key's value_jump threshold, overriding the rule's `pct` (e.g. from bls.yaml)."""
+    watermark_date: Callable[[str], str | None] | None = None
+    """Turns the key's watermark into a value comparable with `date_column` (BLS: `2026-M08`
+    -> `2026-08-01`); None when the watermark is already a date."""
 
 
 # --- due days and rule config -------------------------------------------------------------
 
 
+DaySource = Callable[[duckdb.DuckDBPyConnection, Settings, str], frozenset[date]]
+DAY_SOURCES: dict[str, DaySource] = {}
+"""Due-day sources by name, for `{releases: <name>}` rules: `fn(con, settings, key) -> days`."""
+
+
+def due_days(
+    con: duckdb.DuckDBPyConnection, settings: Settings, source: str, key: str
+) -> frozenset[date]:
+    """The due days source `source` lists for `key`."""
+    if source not in DAY_SOURCES:
+        raise ConfigError(f"unknown due-day source {source!r} (known: {', '.join(DAY_SOURCES)})")
+    return frozenset(DAY_SOURCES[source](con, settings, key))
+
+
 @dataclass(frozen=True)
 class DueRule:
-    """A day is due when it is a `calendar` day (and the `nth_of_month` one, if set)."""
+    """A day is due when it is a `calendar` day (and the `nth_of_month` one, if set), or, for a
+    `releases` rule, one of `days` (resolved per key with `resolve`)."""
 
     calendar: str | None
     nth_of_month: int | None = None
+    releases: str | None = None
+    days: frozenset[date] | None = None
+
+    @property
+    def never(self) -> bool:
+        return self.calendar is None and self.days is None
+
+    def resolve(self, con: duckdb.DuckDBPyConnection, settings: Settings, key: str) -> "DueRule":
+        """For a `releases` rule, the same rule with `key`'s days filled in."""
+        if self.releases is None:
+            return self
+        days = due_days(con, settings, self.releases, key)
+        return DueRule(None, releases=self.releases, days=days)
 
     def is_due(self, cals: calendars.Calendars, d: date) -> bool:
+        if self.days is not None:
+            return d in self.days
         if self.calendar is None or not cals.is_day(self.calendar, d):
             return False
         if self.nth_of_month is None:
@@ -105,6 +143,8 @@ class DueRule:
         return nth == self.nth_of_month
 
     def describe(self) -> str:
+        if self.releases is not None:
+            return f"{self.releases} days"
         if self.calendar is None:
             return "none"
         return self.calendar + (f" #{self.nth_of_month} of month" if self.nth_of_month else "")
@@ -140,6 +180,13 @@ def _due(value: Any, where: str) -> DueRule:
         if value not in calendars.CALENDARS:
             raise ConfigError(f"{where}: unknown due rule {value!r}")
         return DueRule(value)
+    if isinstance(value, Mapping) and "releases" in value:
+        source = value["releases"]
+        if set(value) != {"releases"} or not isinstance(source, str) or not source:
+            raise ConfigError(
+                f"{where}: a releases due rule takes only a source name, got {dict(value)!r}"
+            )
+        return DueRule(None, releases=source)
     if isinstance(value, Mapping):
         unknown = set(value) - {"calendar", "nth_of_month"}
         cal = value.get("calendar")
@@ -382,7 +429,7 @@ def _zero_new_rows(c: _Check, params: Mapping[str, Any]) -> None:
 
 def _stale_watermark(c: _Check, params: Mapping[str, Any]) -> None:
     wm = _as_date(c.watermark)
-    if wm is None or c.due.calendar is None:
+    if wm is None or c.due.never:
         return
     n = int(params["n"])
     count, d = 0, wm
@@ -400,7 +447,8 @@ def _stale_watermark(c: _Check, params: Mapping[str, Any]) -> None:
 def _value_jump(c: _Check, params: Mapping[str, Any]) -> None:
     if c.baseline is None or not c.table_ready() or not c.spec.values:
         return
-    spec, pct = c.spec, float(params["pct"])
+    spec = c.spec
+    pct = float(spec.jump_pct if spec.jump_pct is not None else params["pct"])
     where, args = _where(spec.match, spec.jump_match)
     series = ", ".join(_q(s) for s in spec.series)
     partition = f"PARTITION BY {series} " if series else ""
@@ -432,7 +480,7 @@ def _value_jump(c: _Check, params: Mapping[str, Any]) -> None:
                     "previous": previous,
                     "value": value,
                     "pct_change": (value - previous) / abs(previous) * 100,
-                    "threshold_pct": params["pct"],
+                    "threshold_pct": pct,
                 },
             )
 
@@ -495,14 +543,23 @@ def evaluate(
         con.execute("SELECT key, value FROM watermark WHERE job = ?", [job.name]).fetchall()
     )
     for key in sorted(set(observed) | set(current)):
+        spec = observed.get(key)
+        base = baseline.get(key)
+        if base is not None and spec is not None and spec.watermark_date is not None:
+            base = spec.watermark_date(base)
+        try:
+            due = rules.due_for(key).resolve(con, settings, key)
+        except (ConfigError, duckdb.Error) as exc:
+            log.error("due days for %s/%s failed: %s", job.name, key, exc)
+            due = NEVER
         check = _Check(
             con=con,
             job=job.name,
             key=key,
-            spec=observed.get(key),
-            due=rules.due_for(key),
+            spec=spec,
+            due=due,
             cals=cals,
-            baseline=baseline.get(key),
+            baseline=base,
             watermark=current.get(key),
             today=today,
             now=now,
