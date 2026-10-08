@@ -135,6 +135,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.edgar.companyfacts",
     "usfin.sources.edgar.feed",
     "usfin.sources.edgar.dailyindex",
+    "usfin.sources.edgar.form4",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 

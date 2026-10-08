@@ -31,7 +31,7 @@ import respx
 
 from usfin import calendars, demo, http, jobs, ratelimit, raw, scheduler, store
 from usfin.settings import load_settings
-from usfin.sources.edgar import companyfacts, feed, filings, submissions
+from usfin.sources.edgar import companyfacts, feed, filings, form4, submissions
 
 FIXTURES = Path(__file__).parent / "fixtures" / "edgar"
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config"
@@ -461,15 +461,15 @@ def test_the_chain_drains_submissions_and_companyfacts_once_per_cik(settings, fa
             ("0000320193-26-999999", "companyfacts", 320193, now),  # not yet in the facts: open
             ("0000320193-25-999999", "companyfacts", 320193, now - timedelta(days=2)),  # give up
             ("0000320193-26-000018", "submissions", 320193, now),
-            ("0000320193-26-000001", "form4", 320193, now),
         ],
     )
     fake.requests.clear()
-    result = _run(settings, clock, chain=True)
+    result = _run(settings, clock, chain=True, registry=_registry(form4.JOB))
     assert result.status == "ok", result.error
     assert [(c.job, c.status) for c in result.chained] == [
-        ("edgar_submissions", "ok"), ("edgar_companyfacts", "ok"),
+        ("edgar_submissions", "ok"), ("edgar_companyfacts", "ok"), ("edgar_form4", "ok"),
     ]  # fmt: skip
+    # no form4 queued here: tests/test_form4.py drains that kind
     facts = [r for r in fake.requests if r.startswith("facts:")]
     assert facts == ["facts:CIK0000320193.json"]  # three queued rows, one request
     subs = [r for r in fake.requests if r.startswith("subs:")]
@@ -478,7 +478,6 @@ def test_the_chain_drains_submissions_and_companyfacts_once_per_cik(settings, fa
     assert ("0000320193-26-999999", "companyfacts", 320193) in open_rows
     assert (APPLE_FACT_ACCN, "companyfacts", 320193) not in open_rows
     assert ("0000320193-25-999999", "companyfacts", 320193) not in open_rows
-    assert ("0000320193-26-000001", "form4", 320193) in open_rows  # S24 drains form4
 
 
 def test_a_submissions_doc_is_done_once_the_company_lists_the_accession(settings, fake, clock):

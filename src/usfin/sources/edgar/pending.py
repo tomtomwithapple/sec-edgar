@@ -9,6 +9,11 @@ after a key succeeded, mark its rows done when the fetched document carries the 
 `xbrl_fact` with that `accn`) or when it has waited `GIVE_UP` (SEC builds companyfacts some
 minutes after acceptance, and not every 8-K or amendment carries XBRL facts). An open row keeps
 its CIK in the next drain.
+
+`form4` (S24) is drained per accession, not per CIK: `open_accessions` lists the oldest open rows
+up to a per-run cap and `close` marks one done once its ownership document is stored
+(`insider_filing` has the accession). There is no give-up: an accepted Form 4 always has its
+document, so a row that keeps failing stays open and visible in the run log.
 """
 
 from collections.abc import Iterable
@@ -30,6 +35,7 @@ FOUND = {
     "companyfacts": (
         "EXISTS (SELECT 1 FROM xbrl_fact x WHERE x.cik = p.cik AND x.accn = p.accession_no)"
     ),
+    "form4": ("EXISTS (SELECT 1 FROM insider_filing x WHERE x.accession_no = p.accession_no)"),
 }
 """SQL over `pending_doc p`: the fetched document carries this queued accession."""
 
@@ -76,4 +82,26 @@ def mark_done(con: duckdb.DuckDBPyConnection, kind: str, cik: int, *, now: datet
         f"UPDATE {TABLE} p SET done_at = ? WHERE p.kind = ? AND p.cik = ? AND p.done_at IS NULL"
         f" AND ({found} OR p.enqueued_at <= ?)",
         [now, kind, int(cik), now - GIVE_UP],
+    ).fetchone()[0]
+
+
+def open_accessions(
+    con: duckdb.DuckDBPyConnection, kind: str, *, limit: int
+) -> list[tuple[str, int]]:
+    """The oldest open (accession_no, cik) rows of `kind`, at most `limit`."""
+    if TABLE not in store.table_names(con):
+        return []
+    return con.execute(
+        f"SELECT accession_no, cik FROM {TABLE} WHERE kind = ? AND done_at IS NULL"
+        " ORDER BY enqueued_at, accession_no LIMIT ?",
+        [kind, int(limit)],
+    ).fetchall()
+
+
+def close(con: duckdb.DuckDBPyConnection, kind: str, accession_no: str, *, now: datetime) -> int:
+    """Mark the open `kind` row of `accession_no` done if its document is stored; return 0 or 1."""
+    return con.execute(
+        f"UPDATE {TABLE} p SET done_at = ? WHERE p.kind = ? AND p.accession_no = ?"
+        f" AND p.done_at IS NULL AND {FOUND[kind]}",
+        [now, kind, accession_no],
     ).fetchone()[0]

@@ -6,3 +6,11 @@ watchlist:
   - 320193    # Apple Inc.
   - 19617     # JPMorgan Chase & Co.
   - 789019    # Microsoft Corp.
+
+# Form 4 documents (job edgar_form4, chained after edgar_feed and edgar_reconcile). Each queued
+# filing costs 2 requests (folder index.json + ownership XML); a run drains at most this many,
+# oldest first, so a backlog does not stall the 15-minute feed chain. Measured 2026-10-07:
+# ~0.7 s per document (SEC transfer time, ~3 requests/s, under the 8 rps cap), so 300 is about
+# 3.5 min. The rest wait for the next run.
+form4:
+  max_docs_per_run: 300

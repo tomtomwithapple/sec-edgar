@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S23 done — S18 blocked (FRED_API_KEY) — next: S24
+Status: S24 done — S18 blocked (FRED_API_KEY) — next: S25
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -809,7 +809,7 @@ zero-padded in URLs, stored as BIGINT.
   drain. **Chain:** `then` is `edgar_submissions, edgar_companyfacts` only — chaining a job that
   does not exist yet would fail every run (as with `auction_xcheck` in S8/S14), so S24 and S25 add
   `edgar_form4` / `edgar_sched13` to `feed.JOB.then` with their jobs; until then `form4`/`sched13`
-  rows wait in the queue. `config/edgar.yaml` is `watchlist: [CIK, …]`, seeded with Apple 320193,
+  rows wait in the queue. *(S24: `edgar_form4` added; `form4` drains per accession, see Form 4.)* `config/edgar.yaml` is `watchlist: [CIK, …]`, seeded with Apple 320193,
   JPMorgan 19617, Microsoft 789019. Schedule `*/15 6-22 * * *` federal (the 22:00–22:45 polls
   catch 21:45–22:00 acceptances), `due: federal`, `stale_watermark n: 1` (no `zero_new_rows`: the
   06:00 poll usually has nothing new).
@@ -840,12 +840,67 @@ zero-padded in URLs, stored as BIGINT.
   Received: Oct 7`) and held all 628 feed accessions. Module `usfin.sources.edgar.dailyindex`, raw
   dataset `edgar_master_idx`, schedule `30 23 * * *` federal, `due: federal`, `stale_watermark n: 1`.
   **Chain:** none yet — S24/S25 add `edgar_form4`/`edgar_sched13` to **both** `feed.JOB.then` and
-  `dailyindex.JOB.then`.
+  `dailyindex.JOB.then`. *(S24: `edgar_form4` is in both; the feed's `then` is now `edgar_submissions,
+  edgar_companyfacts, edgar_form4`, the reconcile's `edgar_form4`.)*
 - Form 4 (job `edgar_form4`, raw datasets `edgar_filing_index`, `edgar_form4_xml`): filing folder
   `Archives/edgar/data/{cik}/{accession_nodash}/index.json` → the ownership `.xml` →
   `insider_txn(accession_no, line_no, issuer_cik, owner_cik, owner_name, is_derivative,
   security_title, txn_date, txn_code, shares, price, acquired_disposed, shares_owned_after,
   direct_indirect)` PK (`accession_no`, `line_no`).
+  *(Amended in S24.)* The planned single table could not hold a joint filing's owners, holdings,
+  derivative terms or footnote-only values, so migration `011_insider.sql` has four tables, all
+  keyed by accession and filled from the one XML: `insider_filing(accession_no PK, form, issuer_cik,
+  issuer_name, issuer_ticker, period_of_report, original_filed NULL, document, owners, lines)`,
+  `insider_owner(accession_no, owner_seq, owner_cik, owner_name, is_director, is_officer,
+  is_ten_pct_owner, is_other, officer_title, other_text)` PK (`accession_no, owner_seq`),
+  `insider_txn` with the planned columns plus `is_holding, nature_of_ownership, exercise_price,
+  exercise_date, expiration_date, underlying_title, underlying_shares, footnotes JSON`, and
+  `insider_footnote(accession_no, footnote_id, text)`. **Multiple owners:** a joint Form 4 does not
+  split its lines between owners (BNB Standard's 4/A: YZi Labs and Changpeng Zhao report the same
+  lines), so `insider_txn.owner_cik/owner_name` is the first `reportingOwner` and every owner is in
+  `insider_owner` (one row per line × owner would double-count shares). **Amendments:** a 4/A is
+  its own accession with `form = '4/A'` and `original_filed` = `dateOfOriginalSubmission`; its
+  lines stand beside the original's (the amendment may restate all of them or none — live, BNB's
+  only added the second owner), nothing is deleted from the original. **Footnote-only values**
+  (`<transactionPricePerShare><footnoteId id="F1"/></…>`, RSU exercise/expiration dates) are NULL
+  and `footnotes` maps each column to its ids (`{"price": ["F1"]}`), text in `insider_footnote`.
+  **XML element mapping** (`ownershipDocument`, schema X0609 in every 2026 file seen; a field is
+  `<x><value>…</value><footnoteId id/>…</x>`, flags written `1`/`0` or `true`/`false`):
+  `documentType` → `form` (only `4`, `4/A`; anything else fails the key); `periodOfReport`;
+  `dateOfOriginalSubmission` → `original_filed`; `issuer/issuerCik|issuerName|issuerTradingSymbol`
+  → `issuer_*` (**the issuer is always read here**, never from the queue); each `reportingOwner`
+  → `insider_owner` (`reportingOwnerId/rptOwnerCik|rptOwnerName`,
+  `reportingOwnerRelationship/isDirector|isOfficer|isTenPercentOwner|isOther|officerTitle|otherText`);
+  the children of `nonDerivativeTable`, then `derivativeTable`, in document order → `insider_txn`
+  lines from 1 (`*Transaction`, or `*Holding` with `is_holding` and NULL transaction columns):
+  `securityTitle` → security_title, `transactionDate` → txn_date (first 10 chars),
+  `transactionCoding/transactionCode` → txn_code, `transactionAmounts/transactionShares|
+  transactionPricePerShare|transactionAcquiredDisposedCode` → shares/price/acquired_disposed,
+  `postTransactionAmounts/sharesOwnedFollowingTransaction` → shares_owned_after,
+  `ownershipNature/directOrIndirectOwnership|natureOfOwnership`, and for derivatives
+  `conversionOrExercisePrice`, `exerciseDate`, `expirationDate`,
+  `underlyingSecurity/underlyingSecurityTitle|underlyingSecurityShares`; `footnotes/footnote[@id]`
+  → `insider_footnote` (whitespace collapsed). Not kept: addresses, `deemedExecutionDate`,
+  `transactionFormType`, `equitySwapInvolved`, `transactionTimeliness`, `aff10b5One`, remarks,
+  signatures, `valueOwnedFollowingTransaction`. **Fetch:** per queued accession, the folder
+  `Archives/edgar/data/<queued cik>/<acc without dashes>/index.json` — the folder answers under
+  any party's CIK (verified live: Costco's index-only 0000909832-26-000090 under owner 1928633) —
+  then its first `.xml` item, whose name varies (`ownership.xml` 19 and `form4.xml` 12 of 50 live,
+  else `form4-<date>_<n>.xml`, `wk-form4_<n>.xml`, `primarydocument.xml`, `form4a…xml`); a
+  folder lists only that XML plus `-index.html`, `-index-headers.html` and `.txt`. The
+  `edgar_filing_index` parser stores nothing (the listing only names the XML; S25 shares the
+  dataset). **Idempotence:** a document's rows are compared with the stored ones (`EXCEPT` both
+  ways per table); any difference replaces the accession's rows in all four tables, otherwise
+  nothing is written; rows counted = `insider_txn` lines inserted or changed. **Queue:** keys are
+  the open `form4` accessions oldest first (`enqueued_at, accession_no`), **at most
+  `form4.max_docs_per_run` in `config/edgar.yaml` (default 300)** — S23 left ~4 500 open rows and
+  each costs 2 requests, which would stall the 15-min feed chain; a row closes
+  (`pending.close`) once `insider_filing` has its accession; there is no give-up (a failing
+  accession fails only its key and stays open, visible in the run log). `edgar_filing.cik` is
+  not touched (for an index-only Form 4 it may stay an owner; `insider_filing.issuer_cik` is
+  authoritative). Live 2026-10-07 23:34 ET, the 50 oldest: **~0.7 s per document** (100 requests
+  in 34.6 s, ~3 rps — SEC transfer time, well under the 8 rps cap), so the default cap of 300 is
+  ~3.5 min and the 4 449 left ~52 min, ~15 runs of 300.
 - Schedule 13D/G (job `edgar_sched13`, raw datasets `edgar_filing_index`, `edgar_sched13_xml`):
   structured XML (required since 2024-12-18) → `ownership_stake(accession_no, person_seq,
   filer_cik NULL, filer_name, subject_cik, form, event_date, percent_of_class, shares, filed_at)`
@@ -1214,7 +1269,7 @@ Done when: C14 covered (live day matches exactly).
 
 ### S24 — Form 4
 Depends on: S22
-Red: `tests/test_form4.py` — recorded `index.json` + ownership XML fixtures (one non-derivative, one derivative, one amendment) → expected `insider_txn` rows; idempotent.
+Red: `tests/test_form4.py` — recorded `index.json` + ownership XML fixtures (one non-derivative, one derivative, one amendment) → expected `insider_txn` rows; idempotent. *(S24: plus a holding/indirect one; the amendment has two reporting owners; per-run cap, oldest first.)*
 Green: `sources/edgar/form4.py`, migration, job `edgar_form4` draining `form4`.
 Run: `uv run usfin run edgar_form4` live after a feed run; rows parsed vs pending drained.
 Done when: C13 Form 4 half covered.
@@ -1324,7 +1379,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S21 EDGAR companyfacts | done | 2026-10-08 | 1d73942 | 18 new (test_edgar_companyfacts); suite 390 passed | Live, no 403, `SEC_USER_AGENT` from `.env`, 6 requests in all. Probes via `usfin http get` (raw 737/738, dataset `http_get`): Apple companyfacts 3 789 099 bytes, JPMorgan 7 977 054 bytes (taxonomies dei, us-gaap, invest, srt, ffd, ecd); fixtures trimmed to 9 + 8 verbatim facts (instant, duration, Apple FY2009 `SalesRevenueNet` 36 537 M in the 10-K of 2009-10-27 restated to 42 905 M by the 10-K/A of 2010-01-25, USD/shares, a DEF 14A fact with null `fy`/`fp`, and `invest`/`srt`/`ecd` to be dropped). On `data/usfin.duckdb` (migration 009 applied): `usfin edgar facts --cik 320193` → `#30 ok rows 25135` (505 tags, filed 2009-07-22..2026-07-31), 1 request, 5.2 s; `--cik 19617` → `#31 ok rows 49946` (920 tags, filed 2009-08-10..2026-08-06), 5.7 s — nearly all transfer; both again → `#32 ok rows 0` (same sha256 bodies), 17.2 s of SEC transfer; `usfin reparse edgar_companyfacts` replayed 4 responses in 1.7 s, rows 0; on a scratch copy with `xbrl_fact` emptied, reparse rebuilt 75 081 facts to the identical md5 in 1.6 s (~95 000 facts/s parsed). `xbrl_as_of`: Apple revenue tags as of 2025-10-30 vs 2025-10-31 = 325 vs 328 rows, nothing removed, the 3 added all accn 0000320193-25-000079 (10-K filed 2025-10-31); as of 2009-10-26 vs 2010-01-25 = 4 vs 12, the 8 added from the 10-K, 10-Q and 10-K/A filed in between. Storage: JSON gzips to 6.5 % in `raw/` (256 KB + 503 KB, shared by the 3 fetches each); **xbrl_fact 91 bytes/fact with the PK, 21 without** (fresh files, checkpointed; the DB file itself barely moved, 71.6 → 72.1 MB, as freed blocks were reused). Plan amended (How › SEC EDGAR › Companyfacts): document shape, nullable `fy`/`fp`, `frame` moves, types, `xbrl_as_of` definition, the PK's storage cost as a lever for S26. |
 | S22 EDGAR feed and document queue | done | 2026-10-08 | 5a97746 | 45 new (test_edgar_feed, 18 of them form→kind cases); 3 changed (tickers: a run inside the block is `skipped`; submissions/companyfacts: `pending_doc` now comes from migration 010); suite 435 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Fixtures: 4 probes via `usfin http get` (raw 743–746: the unfiltered feed and `type=10-Q`, `8-K`, `SC 13G`), trimmed to 9 + 2 + 2 + 0 verbatim entries (13G Filed by/Subject, Form 4 Reporting/Issuer, a Form 4 with 4 owners, 8-K, 8-K/A, 10-Qs); **no legacy `SC 13G` was in the feed** (that query: "No recent filings", kept as the empty-feed fixture), so legacy names are tested on `pending_kinds` only. `usfin run edgar_feed` on `data/usfin.duckdb` (Mac clock 23:07 ET on 10-07; migration 010 applied): `#33 ok rows 625` — 10 pages (the cap; 1 000 entries back to 16:15 ET), **622 filings** (189 `4`, 96 `424B2`, 43 `8-K`, 49 Schedule 13D/G (+/A), 3 `10-Q` …), parties Filer 353 / Reporting 263 / Issuer 215 / Subject 108 / Filed by 51 / Depositor 1 / Securitizer 1, every Form 4 `cik` = its Issuer; pending: form4 193 (112 CIKs), sched13 49 (46), companyfacts 3 (3 10-Q filers), submissions 6 (JPMorgan 424B2s); chained `edgar_submissions #34 ok rows 0` (1 request, JPMorgan 4.6 MB, pages skipped) and `edgar_companyfacts #35 ok rows 50 777` (3 requests, 7.7 MB); all 9 submissions/companyfacts rows closed (each document carried its accession); **14 requests, 13.4 s**. Those 6 JPMorgan 424B2s exposed the S20 time bug: submissions had stored 16:24:53 for a filing the feed accepted 16:24:53-04:00 (20:24:53Z) — same-day JSON times are true UTC — so the feed's `accepted_at` now wins; `usfin reparse edgar_feed` replayed the 10 pages and fixed the 6 (rows 6), again rows 0. Second run `#36 ok rows 0`: **1 request** (stopped at watermark 2026-10-08T01:59:16), chain `#37`/`#38` rows 0, no request. No alerts. Plan amended: How › HTTP (SEC skip wired), Jobs (`after_key`), SEC EDGAR › Filings (feed roles override `cik`, feed `accepted_at` wins), Submissions (the S20 time conversion is wrong for same-day filings — contradiction recorded, rule left to S23/S26/user), Feed (live shape, 10 pages ≈ 6 h of an evening, queue/drain rules, chain without form4/sched13 until S24/S25, watchlist seed, schedule). |
 | S23 EDGAR daily-index reconcile | done | 2026-10-08 | 9a5fd8f | 25 new (21 test_edgar_dailyindex, 4 test_edgar_submissions for the same-day time rule); suite 460 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get`: `master.20261006.idx` (raw 762; 310 875 bytes, 3 501 lines, 2 370 accessions; fixture trimmed to 13 lines / 8 accessions: a Form 4 under 3 non-adjacent CIKs, a 4/A, a one-line Form 4, a SCHEDULE 13G and 13D/A, a DRS dated 09-29, a JPMorgan 424B2, the first and last lines) and one `-index-headers.html` (raw 763) for the time rule. **Loose end (submissions times):** decided per filing by `filingDate` = the response's New York fetch date → true UTC, else converted; evidence: the 6 feed-overlap 424B2s equal to the second, and 0001213900-26-107349 JSON 01:11:28Z = header 20261006211128 ET, FILED AS OF 20261007 (6 such evening filings dated the next day — an acceptance-date rule would get them wrong); a submissions time now replaces a stored one unless a feed role exists. `usfin reparse edgar_submissions` (76 responses) → **rows 72**, all +4 h (JPMorgan filings of 10-07 the feed had not seen), again → rows 0; `reparse edgar_feed` rows 0. `usfin run edgar_reconcile` at 23:21 ET on 10-07 (window 09-30..10-07, 6 federal days, 6 requests, all 200 — 10-07's index was already out) → `#39 ok rows 17237`; per day master.idx accessions vs `edgar_filing`: 09-30 2 627/2 627, 10-01 3 898/3 898, 10-02 4 413/4 413, 10-05 3 037/3 037, 10-06 2 370/2 370, **10-07 2 247/2 247 (622 feed + 1 547 index + 78 submissions)**, each exactly once, every distinct (accession, CIK) pair in `edgar_filing_party` (0 missing); all 628 feed accessions were in 10-07's file; 26 pairs listed 2–3 times verbatim; no accession in two days. Watermark `master` = 2026-10-07; `edgar_filing` 171 476 → 188 713, `index` parties 27 516; `pending_doc` form4 4 499 / sched13 491 open (4 748 queued by the index; drained by S24/S25). Second run `#40 ok rows 0` (6 requests, 7.8 s), tables hash-identical; `reparse edgar_reconcile` (12 responses) rows 0; no alerts. Requests in all: 14 (2 probes + 2 × 6 days). Plan amended: How › SEC EDGAR › Daily index reconcile (window was max(wm−7d, today−7d), which ignores outages against C3 — built min(watermark, today−7d), here and in the S23 entry; 404 rules; live format; queue CIK; chain left to S24/S25 on both jobs), Submissions (same-day rule decided, 72 rows), Filings (submissions time replaces unless a feed role). |
-| S24 Form 4 | todo | | | | |
+| S24 Form 4 | done | 2026-10-08 | | 14 new (test_form4); 1 changed (test_edgar_feed: the feed chain now runs `edgar_form4` too, so the test no longer queues a form4 row it expects left open); suite 474 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get` (raw 776–787, 12 requests, dataset `probe_form4`): 6 folder `index.json` + 6 XMLs; fixtures are 4 of them byte for byte, untrimmed — Costco 0000909832-26-000090 (non-derivative; index-only, queued under **owner** 1928633, and the folder answered under that CIK), StageWise 0001213900-26-107674 (sale + indirect `nonDerivativeHolding`), Skyworks 0001193125-26-417218 (2 non-derivative + 10 derivative RSU lines, flags `true`/`false`, footnote-only exercise price/dates; 27 KB, kept whole rather than cut) and BNB Standard 0000921895-26-002756 (**4/A by two reporting owners**, derivative transactions + `derivativeHolding`, footnote-only prices/dates). No smaller derivative-only Form 4 was among the 4 sampled. `usfin run edgar_form4` on `data/usfin.duckdb` with a scratch config capping 50 (migration 011 applied, 23:34 ET on 10-07): `#41 ok rows 220` in 36 s — **100 requests (50 × 2), all 200, 34.6 s, 0.51 MB of XML**; 50 `insider_filing` (all `4`: the 50 oldest were feed-queued at 03:06Z, so their queued CIK was the issuer; 0 mismatches between queued CIK, `edgar_filing.cik` and the XML issuer), 54 owners (2 joint filings), 220 lines (118 non-derivative transactions, 16 non-derivative holdings, 71 derivative transactions, 15 derivative holdings; codes M 55, A 53, S 50, F 16, C 8, J 6, P 1), 202 footnotes; 10 transactions with NULL price, every one footnote-only; pending `form4` 4 499 → 4 449 open. `usfin reparse edgar_form4` replayed 100 responses, **rows 0**, the four tables hash-identical, 1.1 s. **Projection:** ~0.7 s/document → the 4 449 left ≈ 52 min of requests, ~15 runs at the default cap 300 (~3.5 min each, inside the 15-min feed cycle). Plan amended (How › SEC EDGAR › Form 4: one table became four — owners, holdings, derivative terms and footnote-only values did not fit `insider_txn` alone —, element mapping, multiple-owner and amendment rules, fetch path under the queued CIK, per-accession drain with the `max_docs_per_run` cap; Feed and Daily index: chain now includes `edgar_form4`). |
 | S25 Schedule 13D/G | todo | | | | |
 | S26 EDGAR bulk backfill | todo | | | | |
 | S27 Weekly bulk reconcile and prune | todo | | | | |

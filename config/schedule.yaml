@@ -70,7 +70,7 @@ jobs:
   edgar_feed:
     cron: "*/15 6-22 * * *"        # latest filings; EDGAR accepts 06:00-22:00 ET, so the last
                                    # polls (22:00-22:45) pick up the 21:45-22:00 filings.
-                                   # Chains edgar_submissions and edgar_companyfacts.
+                                   # Chains edgar_submissions, edgar_companyfacts, edgar_form4.
     calendar: federal
     due: federal
     alerts:
@@ -78,7 +78,8 @@ jobs:
   edgar_reconcile:
     cron: "30 23 * * *"            # master.YYYYMMDD.idx for the federal days from
                                    # min(watermark, today - 7d); today's index may not be out
-                                   # yet (404, normal). Form 4 / 13D/G accessions are queued.
+                                   # yet (404, normal). Form 4 / 13D/G accessions are queued;
+                                   # chains edgar_form4.
     calendar: federal
     due: federal
     alerts:
@@ -89,5 +90,10 @@ jobs:
     due: none
   edgar_companyfacts:              # no cron: drains pending_doc kind companyfacts, chained after
                                    # edgar_feed (S22); `usfin edgar facts --cik` by hand
+    calendar: federal
+    due: none
+  edgar_form4:                     # no cron: drains pending_doc kind form4 (oldest first, at most
+                                   # edgar.yaml form4.max_docs_per_run), chained after edgar_feed
+                                   # and edgar_reconcile (S24)
     calendar: federal
     due: none

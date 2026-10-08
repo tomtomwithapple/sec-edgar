@@ -1,0 +1,323 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4/A</documentType>
+
+    <periodOfReport>2026-09-17</periodOfReport>
+
+    <dateOfOriginalSubmission>2026-09-21</dateOfOriginalSubmission>
+
+    <notSubjectToSection16>0</notSubjectToSection16>
+
+    <issuer>
+        <issuerCik>0001482541</issuerCik>
+        <issuerName>BNB Standard Corp</issuerName>
+        <issuerTradingSymbol>BNC</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0002098271</rptOwnerCik>
+            <rptOwnerName>YZILabs Management Ltd.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>true</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>2ND FLOOR, WATER'S EDGE BUILDING</rptOwnerStreet1>
+            <rptOwnerStreet2>WICKHAMS CAY II</rptOwnerStreet2>
+            <rptOwnerCity>ROAD TOWN TORTOLA</rptOwnerCity>
+            <rptOwnerNonUSStateTerritory>VIRGIN ISLANDS</rptOwnerNonUSStateTerritory>
+            <rptOwnerCountry>D8</rptOwnerCountry>
+            <rptOwnerZipCode>VG1110</rptOwnerZipCode>
+            <rptOwnerStateDescription>VIRGIN ISLANDS, BRITISH</rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>0</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>0</isOther>
+            <officerTitle></officerTitle>
+            <otherText></otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001918995</rptOwnerCik>
+            <rptOwnerName>Zhao Changpeng</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>true</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>2ND FLOOR, WATER'S EDGE BUILDING</rptOwnerStreet1>
+            <rptOwnerStreet2>WICKHAMS CAY II</rptOwnerStreet2>
+            <rptOwnerCity>ROAD TOWN</rptOwnerCity>
+            <rptOwnerNonUSStateTerritory>TORTOLA</rptOwnerNonUSStateTerritory>
+            <rptOwnerCountry>D8</rptOwnerCountry>
+            <rptOwnerZipCode>VG1110</rptOwnerZipCode>
+            <rptOwnerStateDescription>VIRGIN ISLANDS, BRITISH</rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>0</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>0</isOther>
+            <officerTitle></officerTitle>
+            <otherText></otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock, par value $0.00001 per share</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-17</value>
+            </transactionDate>
+            <deemedExecutionDate></deemedExecutionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>X</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionTimeliness></transactionTimeliness>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>2180631</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>4331112</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F3"/>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock, par value $0.00001 per share</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-17</value>
+            </transactionDate>
+            <deemedExecutionDate></deemedExecutionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>X</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionTimeliness></transactionTimeliness>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>5418633</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>9749745</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F3"/>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <derivativeTable>
+        <derivativeTransaction>
+            <securityTitle>
+                <value>Strategic Advisor Warrants</value>
+            </securityTitle>
+            <conversionOrExercisePrice>
+                <footnoteId id="F1"/>
+            </conversionOrExercisePrice>
+            <transactionDate>
+                <value>2026-09-17</value>
+            </transactionDate>
+            <deemedExecutionDate></deemedExecutionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>X</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionTimeliness></transactionTimeliness>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>2180631</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F4"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <exerciseDate>
+                <footnoteId id="F4"/>
+            </exerciseDate>
+            <expirationDate>
+                <value>2030-08-05</value>
+            </expirationDate>
+            <underlyingSecurity>
+                <underlyingSecurityTitle>
+                    <value>Common Stock, $0.00001 per share</value>
+                </underlyingSecurityTitle>
+                <underlyingSecurityShares>
+                    <value>2180631</value>
+                    <footnoteId id="F5"/>
+                </underlyingSecurityShares>
+            </underlyingSecurity>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>1383728</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F3"/>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </derivativeTransaction>
+        <derivativeTransaction>
+            <securityTitle>
+                <value>Pre-Funded Warrants</value>
+            </securityTitle>
+            <conversionOrExercisePrice>
+                <footnoteId id="F1"/>
+            </conversionOrExercisePrice>
+            <transactionDate>
+                <value>2026-09-17</value>
+            </transactionDate>
+            <deemedExecutionDate></deemedExecutionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>X</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionTimeliness></transactionTimeliness>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>5418633</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F6"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <exerciseDate>
+                <footnoteId id="F6"/>
+            </exerciseDate>
+            <expirationDate>
+                <footnoteId id="F6"/>
+            </expirationDate>
+            <underlyingSecurity>
+                <underlyingSecurityTitle>
+                    <value>Common Stock, $0.00001 per share</value>
+                </underlyingSecurityTitle>
+                <underlyingSecurityShares>
+                    <value>5418633</value>
+                    <footnoteId id="F5"/>
+                </underlyingSecurityShares>
+            </underlyingSecurity>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>2331877</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F3"/>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </derivativeTransaction>
+        <derivativeHolding>
+            <securityTitle>
+                <value>Stapled Warrants</value>
+            </securityTitle>
+            <conversionOrExercisePrice>
+                <value>15.15</value>
+            </conversionOrExercisePrice>
+            <exerciseDate>
+                <footnoteId id="F7"/>
+            </exerciseDate>
+            <expirationDate>
+                <value>2028-06-28</value>
+            </expirationDate>
+            <underlyingSecurity>
+                <underlyingSecurityTitle>
+                    <value>Common Stock, $0.00001 per share</value>
+                </underlyingSecurityTitle>
+                <underlyingSecurityShares>
+                    <value>9900991</value>
+                    <footnoteId id="F5"/>
+                </underlyingSecurityShares>
+            </underlyingSecurity>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>9900991</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F3"/>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </derivativeHolding>
+    </derivativeTable>
+
+    <footnotes>
+        <footnote id="F1">The exercise price is $0.00001 per share.</footnote>
+        <footnote id="F2">This Form 4 is filed jointly by YZiLabs Management Ltd, a British Virgin Islands business company (&quot;YZi Labs&quot;) and Changpeng Zhao (&quot;Mr. Zhao&quot;), a citizen of the United Arab Emirates (collectively, the &quot;Reporting Persons&quot;). Each Reporting Person may be deemed to be a member of a Section 13(d) group that owns more than 10% of the Issuer's outstanding shares of Common Stock. Each Reporting Person disclaims beneficial ownership of the securities reported herein except to the extent of his or its pecuniary interest therein, and this report shall not be deemed to be an admission that any Reporting Person is the beneficial owner of such securities for purposes of Section 16 or for any other purpose.</footnote>
+        <footnote id="F3">Securities beneficially owned by YZi Labs. As the sole director of YZi Labs, Mr. Zhao may be deemed to beneficially own the securities beneficially owned directly by YZi Labs.</footnote>
+        <footnote id="F4">The Strategic Advisor Warrants are immediately exercisable at an exercise price equal to $0.00001 per share and may be exercised at any point on or prior to 5:00 p.m. on August 5, 2030, subject to the SAW Beneficial Ownership Limitation (as defined below). Pursuant to the terms of the Strategic Advisor Warrants, the holder may increase or decrease the SAW Beneficial Ownership Limitation upon 61 days' notice to the Issuer, provided that such Beneficial Ownership Limitation in no event exceeds 9.99% of the Issuer's then outstanding shares of Common Stock. As of the date hereof, the Beneficial Ownership Limitation under the Strategic Advisor Warrants is 9.99% of the Issuer's then outstanding shares of Common Stock (the &quot;SAW Beneficial Ownership Limitation&quot;). On September 17, YZi Labs exercised 2,180,631 Strategic Advisor Warrants, representing 2,180,631 shares of Common Stock, at an exercise price of $0.00001 per share.</footnote>
+        <footnote id="F5">Each of the Pre-Funded Warrants, the Stapled Warrants and the Strategic Advisor Warrants either provide, or the holder has elected, that the holder shall not have the right to exercise any portion of any such warrants to the extent that after giving effect to such issuance after exercise, such holder and certain of its affiliates would be deemed to beneficially own, as determined in accordance with Section 13(d) of the Exchange Act, more than a certain percentage of the Issuer's then outstanding shares of common stock (the &quot;Beneficial Ownership Limitations&quot;), as adjusted pursuant to the terms of the Pre-Funded Warrants, the Stapled Warrants and the Strategic Advisor Warrants. On September 17, 2026, the Issuer agreed to waive the required 61 days' notice period to the Issuer with respect to an increase in the Beneficial Ownership Limitations under the terms of each of the Pre-Funded Warrants and the Strategic Advisor Warrants held by YZi Labs.</footnote>
+        <footnote id="F6">The Pre-Funded Warrants are immediately exercisable at an initial exercise price equal to $0.00001 per share and may be exercised at any time until the Pre-Funded Warrants are exercised in full, subject to the PFW Beneficial Ownership Limitation (as defined below). Pursuant to the terms of the Pre-Funded Warrants, the holder may increase or decrease the PFW Beneficial Ownership Limitation upon 61 days' notice to the Issuer, provided that such Beneficial Ownership Limitation in no event exceeds 19.99% of the Issuer's then outstanding shares of Common Stock. As of the date hereof, the Beneficial Ownership Limitation under the Pre-Funded Warrants is 19.99% of the Issuer's then outstanding shares of Common Stock (the &quot;PFW Beneficial Ownership Limitation&quot;). On September 17, 2026, YZi Labs exercised 5,418,633 Pre-Funded Warrants, representing 5,418,633 shares of Common Stock, at an exercise price of $0.00001 per share.</footnote>
+        <footnote id="F7">The Stapled Warrants are immediately exercisable at an initial exercise price equal to $15.15 per Share and may be exercised at any time on or prior to 5:00 p.m. on June 28, 2028, subject to the SW Beneficial Ownership Limitation (as defined below). Pursuant to the terms of the Stapled Warrants, the holder may increase or decrease the SW Beneficial Ownership Limitation upon 61 days' notice to the Issuer to any other percentage specified in the notice. As of the date hereof, the Beneficial Ownership Limitation under the Stapled Warrants is 4.99% of the Issuer's then outstanding shares of Common Stock (the &quot;SW Beneficial Ownership Limitation&quot;).</footnote>
+    </footnotes>
+
+    <remarks>The Form 4 filed on September 21, 2026 was filed under the correct name of YZi Labs but was filed without the EDGAR filing credentials for the Reporting Person, Mr. Zhao. This amendment correctly discloses Mr. Zhao as a Reporting Person and otherwise does not change any other information set forth in the original Form 4.</remarks>
+
+    <ownerSignature>
+        <signatureName>YZiLabs Management Ltd, By: /s/ Ling Zhang, Authorized Signatory</signatureName>
+        <signatureDate>2026-10-07</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>/s/ Changpeng Zhao</signatureName>
+        <signatureDate>2026-10-07</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
