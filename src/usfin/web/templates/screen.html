@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head">
+  <h1>Screen{% if spec %}: {{ concept_name }} {{ period }}{% endif %}</h1>
+  {% if table.columns %}<a class="csv" href="{{ csv_href }}">CSV</a>{% endif %}
+</div>
+<form class="query" method="get" action="/screen">
+  <label for="concept">Concept</label>
+  <select id="concept" name="concept">
+    {% for name, c in cmap.concepts.items() %}<option value="{{ name }}"{% if name == concept_name %} selected{% endif %}>{{ name }} ({{ c.unit }})</option>{% endfor %}
+  </select>
+  <label for="period">Period</label>
+  <input id="period" name="period" type="text" value="{{ period }}" placeholder="CY2025Q2" pattern="CY[0-9]{4}(Q[1-4])?I?" required spellcheck="false" autocapitalize="characters">
+  <button type="submit">Screen</button>
+</form>
+<p class="muted">Periods are SEC frames: <code>CY2025</code> (year), <code>CY2025Q2</code> (quarter), with <code>I</code> for an instant — balance-sheet concepts need it (<code>CY2025Q2I</code>). The screen reads stored <code>xbrl_fact</code> rows; the frames API is fetched only when asked, then cached 24 h.</p>
+
+{% if spec %}
+<nav class="pick" aria-label="Source">
+  <a href="/screen?concept={{ concept_name | urlencode }}&amp;period={{ period | urlencode }}"{% if source == "xbrl" %} aria-current="true"{% endif %}>Stored facts (all tags)</a>
+  <span class="muted">Frames API:</span>
+  {% for t in spec.tags %}<a href="{{ frames_href(t) }}"{% if source == "frames" and t == tag %} aria-current="true"{% endif %}>{{ t }}</a>{% endfor %}
+</nav>
+{% endif %}
+
+{% if frames_error %}
+<p class="notice bad">Frames API: {{ frames_error }}</p>
+{% elif source == "xbrl" and spec %}
+<p>{{ table.rows | length | num }} companies; tag used:
+  {% for t, n in by_tag.items() %}<code>{{ t }}</code> {{ n | num }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  <span class="muted">Per company the first listed tag it reports for {{ period }} ({{ spec.taxonomy }}, {{ spec.unit }}), latest filing.</span></p>
+{% elif frame %}
+<p>{{ frame.label or frame.tag }} — {{ frame.points | length | num }} companies (pts {{ frame.pts | num }}),
+  <span class="muted">{{ "cached" if frame.cached else "fetched" }} {{ frame.fetched_at | cell }}, raw {{ frame.raw_id }}; one tag only: <code>{{ frame.tag }}</code> {{ frame.unit }}.</span></p>
+{% endif %}
+
+{% if table.rows %}
+{% if table.rows | length > screen_rows %}<p class="muted">Largest {{ screen_rows }} of {{ table.rows | length | num }}; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  {% if source == "frames" %}
+  <thead><tr><th class="num">#</th><th>Company</th><th class="num">Value</th><th>Dates</th><th>Loc</th><th>Accession</th></tr></thead>
+  <tbody>
+  {% for r in table.rows[:screen_rows] %}
+    <tr>
+      <td class="num">{{ r.rank }}</td>
+      <td class="name wrap"><a href="/edgar/{{ r.cik }}">{{ r.entity_name }}</a></td>
+      <td class="num">{{ r.value | num }}</td>
+      <td>{% if r.period_start %}{{ r.period_start | cell }} – {% endif %}{{ r.period_end | cell }}</td>
+      <td>{{ r.loc | cell }}</td>
+      <td>{{ r.accn }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+  {% else %}
+  <thead><tr><th class="num">#</th><th>Company</th><th class="num">Value</th><th>Tag used</th><th>Dates</th><th>Form</th><th>Filed</th><th>Accession</th></tr></thead>
+  <tbody>
+  {% for r in table.rows[:screen_rows] %}
+    <tr>
+      <td class="num">{{ r.rank }}</td>
+      <td class="name wrap"><a href="/edgar/{{ r.cik }}">{{ r.name or ("CIK " ~ r.cik) }}</a></td>
+      <td class="num">{{ r.value | num }}</td>
+      <td><code>{{ r.tag }}</code></td>
+      <td>{% if r.period_start != r.period_end %}{{ r.period_start | cell }} – {% endif %}{{ r.period_end | cell }}</td>
+      <td>{{ r.form }}</td>
+      <td>{{ r.filed | cell }}</td>
+      <td>{{ r.accn }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+  {% endif %}
+</table>
+</div>
+{% elif spec and not frames_error %}
+<p class="notice warn">No company reports {{ concept_name }} for {{ period }}.{% if not period.endswith("I") and concept_name in ("assets", "liabilities", "stockholders_equity", "cash", "shares_outstanding") %} Balance-sheet values are instants: try {{ period }}I.{% endif %}</p>
+{% endif %}
+{% endblock %}

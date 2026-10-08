@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/edgar">EDGAR</a> › CIK {{ "%010d" | format(cik) }}</p>
+<div class="head">
+  <h1>{{ head.title or ("CIK " ~ cik) }}</h1>
+</div>
+<p class="sub">
+  {% for t in head.tickers %}<span class="tag">{{ t }}</span> {% endfor %}
+  {% if head.inactive_tickers %}<span class="muted">formerly {{ head.inactive_tickers | join(", ") }}</span>{% endif %}
+</p>
+<dl class="facts-head">
+  <div><dt>CIK</dt><dd><code>{{ "%010d" | format(cik) }}</code></dd></div>
+  <div><dt>Filings</dt><dd>{{ head.filings | num }}{% if head.filings %} <span class="muted">{{ head.first_filed | cell }} – {{ head.last_filed | cell }}</span>{% endif %}</dd></div>
+  <div><dt>XBRL facts</dt><dd>{{ head.facts | num }}{% if head.last_fact_filed %} <span class="muted">newest filed {{ head.last_fact_filed | cell }}</span>{% endif %}</dd></div>
+  <div><dt>Form 4 lines</dt><dd>{{ n_insider | num }}</dd></div>
+  <div><dt>13D/G persons</dt><dd>{{ n_stakes | num }}</dd></div>
+</dl>
+
+<section>
+<div class="head"><h2>Key facts</h2><a class="csv" href="{{ table_csv('facts') }}">CSV</a></div>
+<p class="muted">Per concept (<code>concepts.yaml</code> v{{ cmap.version }}) the newest annual, quarterly and instant frame; the first listed tag the company reports wins. A period opens the screen for it.</p>
+{% if facts %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Concept</th><th>Kind</th><th>Period</th><th class="num">Value</th><th>Unit</th><th>Tag used</th><th>Dates</th><th>Form</th><th>Filed</th></tr></thead>
+  <tbody>
+  {% for r in facts %}
+    <tr>
+      <td class="name">{{ r.concept }}</td>
+      <td>{{ r.kind }}</td>
+      <td><a href="{{ screen_href(r.concept, r.period) }}">{{ r.period }}</a>{% if r.stale %} <span class="rule" title="more than a year older than this company's newest key fact">old</span>{% endif %}</td>
+      <td class="num">{{ r.value | num }}</td>
+      <td>{{ r.unit }}</td>
+      <td><code>{{ r.tag }}</code></td>
+      <td>{% if r.period_start != r.period_end %}{{ r.period_start | cell }} – {% endif %}{{ r.period_end | cell }}</td>
+      <td>{{ r.form }}</td>
+      <td>{{ r.filed | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="notice warn">No XBRL facts with a frame for any concept in the map.</p>
+{% endif %}
+{% if chart_links %}
+<nav class="pick" aria-label="Chart concept">
+  <span class="muted">Chart:</span>
+  {% for n, href in chart_links %}<a href="{{ href }}"{% if n == chart_concept %} aria-current="true"{% endif %}>{{ n }}</a>{% endfor %}
+</nav>
+{% endif %}
+{% if chart %}<figure class="chart-box">{{ chart | safe }}</figure>{% elif facts %}<p class="muted">{{ chart_concept }}: no values to chart.</p>{% endif %}
+</section>
+
+<section>
+<div class="head"><h2>Filings</h2><a class="csv" href="{{ table_csv('filings') }}">CSV</a></div>
+{% if filings %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Filed</th><th>Form</th><th>Accession</th><th>Accepted</th><th>Report date</th><th>Document</th></tr></thead>
+  <tbody>
+  {% for r in filings %}
+    <tr>
+      <td>{{ r.filed_at | cell }}</td>
+      <td class="name">{{ r.form }}</td>
+      <td><a href="{{ r.href }}" rel="noreferrer">{{ r.accession_no }}</a></td>
+      <td>{{ r.accepted_at | cell }}</td>
+      <td>{{ r.report_date | cell }}</td>
+      <td>{{ r.primary_doc | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<nav class="pager" aria-label="Filings pages">
+  {% if page > 1 %}<a href="{{ page_href(page - 1) }}" rel="prev">‹ Newer</a>{% endif %}
+  <span class="muted">page {{ page }} of {{ pages | num }}</span>
+  {% if page < pages %}<a href="{{ page_href(page + 1) }}" rel="next">Older ›</a>{% endif %}
+</nav>
+{% else %}
+<p class="muted">{% if page > 1 %}No filings on page {{ page }}.{% else %}No filings stored for this CIK.{% endif %}</p>
+{% endif %}
+</section>
+
+<section>
+<div class="head"><h2>Insider transactions (Form 4)</h2><a class="csv" href="{{ table_csv('insider') }}">CSV</a></div>
+{% if insider %}
+{% if n_insider > insider | length %}<p class="muted">Newest {{ insider | length }} of {{ n_insider | num }}; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Date</th><th>Owner</th><th>Relationship</th><th>Security</th><th>Code</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Owned after</th><th>Filed</th><th>Accession</th></tr></thead>
+  <tbody>
+  {% for r in insider %}
+    <tr>
+      <td>{{ r.txn_date | cell }}</td>
+      <td class="name"><a href="/edgar/{{ r.owner_cik }}">{{ r.owner_name or r.owner_cik }}</a></td>
+      <td class="wrap">{{ r.relationship | cell }}</td>
+      <td class="wrap">{{ r.security_title | cell }}{% if r.is_derivative %} <span class="muted">(derivative)</span>{% endif %}</td>
+      <td>{{ r.txn_code | cell }}{% if r.acquired_disposed %} <span class="muted">{{ r.acquired_disposed }}</span>{% endif %}</td>
+      <td class="num">{{ r.shares | num }}</td>
+      <td class="num">{{ r.price | num }}</td>
+      <td class="num">{{ r.shares_owned_after | num }}</td>
+      <td>{{ r.filed_at | cell }}</td>
+      <td><a href="{{ r.accession_no and ('https://www.sec.gov/Archives/edgar/data/' ~ cik ~ '/' ~ r.accession_no.replace('-', '') ~ '/') }}" rel="noreferrer">{{ r.accession_no }}</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No Form 4 transactions stored with this company as issuer.</p>
+{% endif %}
+</section>
+
+<section>
+<div class="head"><h2>Schedule 13D/G stakes</h2><a class="csv" href="{{ table_csv('stakes') }}">CSV</a></div>
+{% if stakes %}
+{% if n_stakes > stakes | length %}<p class="muted">Newest {{ stakes | length }} of {{ n_stakes | num }}; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Filed</th><th>Event</th><th>Form</th><th>Reporting person</th><th class="num">% of class</th><th class="num">Shares</th><th>Type</th><th>Accession</th></tr></thead>
+  <tbody>
+  {% for r in stakes %}
+    <tr>
+      <td>{{ r.filed_at | cell }}</td>
+      <td>{{ r.event_date | cell }}</td>
+      <td>{{ r.form }}</td>
+      <td class="name wrap">{% if r.filer_cik %}<a href="/edgar/{{ r.filer_cik }}">{{ r.filer_name or r.filer_cik }}</a>{% else %}{{ r.filer_name | cell }}{% endif %}</td>
+      <td class="num">{{ r.percent_of_class | num }}</td>
+      <td class="num">{{ r.shares | num }}</td>
+      <td>{{ r.person_type | cell }}</td>
+      <td>{{ r.accession_no }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No Schedule 13D/G stakes stored with this company as subject.</p>
+{% endif %}
+</section>
+{% endblock %}

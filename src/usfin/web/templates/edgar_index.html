@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head"><h1>EDGAR companies</h1></div>
+<form class="query" method="get" action="/edgar">
+  <label for="q">Ticker or CIK</label>
+  <input id="q" name="q" type="text" placeholder="AAPL, BRK.B, 320193" required autocapitalize="characters" spellcheck="false">
+  <button type="submit">Open</button>
+</form>
+<p class="muted">Any ticker notation works (<code>BRK.B</code>, <code>BRK-B</code>, <code>BRK/B</code>). A company page shows its filings, key facts by the concept map, Form 4 transactions and Schedule 13D/G stakes. For one concept across companies use the <a href="/screen">Screen</a>.</p>
+{% endblock %}

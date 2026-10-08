@@ -182,3 +182,32 @@ td.hl { font-weight: 600; }
   .chart .tick, .chart .label { font-size: 20px; }
   .chart .label.y { display: none; }
 }
+
+/* EDGAR company and screen */
+section { margin-top: 8px; }
+section .head h2 { margin: 18px 0 6px; }
+.tag {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--surface);
+}
+.facts-head { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 6px 0 4px; }
+.facts-head div { min-width: 8em; }
+.facts-head dt { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+.facts-head dd { margin: 0; font-variant-numeric: tabular-nums; }
+form.query { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0; }
+form.query input[type="text"], form.query select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 8px;
+  max-width: 100%;
+}
+.pager { display: flex; gap: 14px; align-items: baseline; margin: 8px 0; }
+td code { white-space: nowrap; }

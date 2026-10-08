@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Request
@@ -26,9 +26,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from usfin import __version__, alerts, jobs, store
+from usfin import http as usfin_http
 from usfin.scheduler import ET, Scheduler, next_fires
+from usfin.settings import ConfigError
 from usfin.sources import fiscal
+from usfin.sources.edgar import concepts as edgar_concepts
+from usfin.sources.edgar import frames as edgar_frames
 from usfin.web import charts, series
+from usfin.web import edgar as web_edgar
 from usfin.web.tables import Table, cell, csv_href, respond, wants_csv, wants_html
 
 UI_LOCK_WAIT = 5.0
@@ -70,6 +75,7 @@ def _slug(text: str) -> str:
 def make_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["cell"] = cell
+    templates.env.filters["num"] = web_edgar.num
     return templates
 
 
@@ -336,6 +342,184 @@ def create_app(
             chart=chart,
             field_href=lambda f: "/series/auctions?" + urlencode({**base, "field": f}),
             html_rows=HTML_ROWS,
+            **context,
+        )
+
+    # --- EDGAR company and screen ---------------------------------------------------------
+
+    @app.get("/edgar")
+    def edgar_lookup(request: Request) -> Response:
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            return RedirectResponse(f"/edgar/{quote(q, safe='')}", status_code=303)
+        return templates.TemplateResponse(
+            request, "edgar_index.html", {"title": "EDGAR", "nav": "edgar"}
+        )
+
+    @app.get("/edgar/{key:path}")
+    def edgar_company(key: str, request: Request) -> Response:
+        params = request.query_params
+        cmap = edgar_concepts.load_concepts(settings.config_dir)
+        which = params.get("table", "filings")
+        if wants_csv(request) and which not in web_edgar.TABLES:
+            raise HTTPException(400, f"table must be one of {', '.join(web_edgar.TABLES)}")
+        chart_concept = params.get("chart", "revenue")
+        if chart_concept not in cmap.concepts:
+            raise HTTPException(400, f"unknown concept {chart_concept!r}")
+        try:
+            page = int(params.get("page", "1"))
+        except ValueError:
+            page = 0
+        if page < 1:
+            raise HTTPException(400, "page must be a whole number >= 1")
+        with db() as con:
+            if not key.isdigit():
+                cik = web_edgar.resolve(con, key)
+                if cik is None:
+                    raise HTTPException(404, f"no EDGAR company with ticker {key!r}")
+                url = f"/edgar/{cik}" + (f"?{request.url.query}" if request.url.query else "")
+                return RedirectResponse(url, status_code=307)
+            cik = int(key)
+            if wants_csv(request):
+                return web_edgar.csv_table(con, cik, which, cmap)
+            head = web_edgar.company(con, cik)
+            if head is None:
+                raise HTTPException(404, f"nothing stored for CIK {cik}")
+            offset = (page - 1) * web_edgar.FILINGS_PAGE
+            filing_rows = web_edgar.filings(con, cik, limit=web_edgar.FILINGS_PAGE, offset=offset)
+            per_frame = web_edgar.frame_values(con, cik, cmap)
+            n_insider, insider_rows = web_edgar.insider(con, cik, limit=web_edgar.RECENT)
+            n_stakes, stake_rows = web_edgar.stakes(con, cik, limit=web_edgar.RECENT)
+        facts = web_edgar.key_facts(per_frame, cmap)
+        spec = cmap[chart_concept]
+        how, points = web_edgar.chart_series(per_frame, chart_concept)
+        chart = charts.line_chart(
+            points,
+            title=f"{head['title'] or cik}: {chart_concept} ({how}, {spec.unit})",
+            y_label=f"{chart_concept}, {spec.unit}",
+            x_label="Year" if how == "annual" else "Quarter end",
+        )
+        for r in filing_rows:
+            r["href"] = web_edgar.filing_href(cik, r["accession_no"])
+        charted = {r["concept"] for r in per_frame}
+
+        def page_href(n: int) -> str:
+            return f"/edgar/{cik}?" + urlencode({**params, "page": n})
+
+        def table_csv(name: str) -> str:
+            return f"/edgar/{cik}?" + urlencode({"format": "csv", "table": name})
+
+        pages = max(1, -(-head["filings"] // web_edgar.FILINGS_PAGE))
+        return templates.TemplateResponse(
+            request,
+            "edgar_company.html",
+            {
+                "title": head["title"] or f"CIK {cik}",
+                "nav": "edgar",
+                "head": head,
+                "cik": cik,
+                "filings": filing_rows,
+                "page": page,
+                "pages": pages,
+                "page_href": page_href,
+                "facts": facts,
+                "chart": chart,
+                "chart_concept": chart_concept,
+                "chart_how": how,
+                "chart_links": [
+                    (n, f"/edgar/{cik}?" + urlencode({"chart": n}))
+                    for n in cmap.concepts
+                    if n in charted
+                ],
+                "insider": insider_rows,
+                "n_insider": n_insider,
+                "stakes": stake_rows,
+                "n_stakes": n_stakes,
+                "table_csv": table_csv,
+                "cmap": cmap,
+                "screen_href": lambda concept, period: (
+                    "/screen?" + urlencode({"concept": concept, "period": period})
+                ),
+            },
+        )
+
+    @app.get("/screen")
+    def screen_page(request: Request) -> Response:
+        params = request.query_params
+        cmap = edgar_concepts.load_concepts(settings.config_dir)
+        concept_name = params.get("concept") or ""
+        period = (params.get("period") or "").strip().upper()
+        source = params.get("source", "xbrl")
+        context: dict[str, Any] = {
+            "title": "Screen",
+            "nav": "screen",
+            "cmap": cmap,
+            "concept_name": concept_name,
+            "period": period,
+            "source": source,
+            "screen_rows": web_edgar.SCREEN_ROWS,
+            "csv_href": csv_href(request),
+        }
+        if not (concept_name and period):
+            return respond(request, templates, "screen.html", Table("screen", ()), **context)
+        if concept_name not in cmap.concepts:
+            raise HTTPException(400, f"unknown concept {concept_name!r}")
+        if source not in ("xbrl", "frames"):
+            raise HTTPException(400, "source must be xbrl or frames")
+        try:
+            edgar_frames.check_period(period)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        spec = cmap[concept_name]
+        context["spec"] = spec
+        context["frames_href"] = lambda tag: (
+            "/screen?"
+            + urlencode({"concept": concept_name, "period": period, "source": "frames", "tag": tag})
+        )
+        if source == "xbrl":
+            with db() as con:
+                found = edgar_concepts.screen(con, spec, period)
+            rows = [{"rank": i, **vars(r)} for i, r in enumerate(found, 1)]
+            by_tag = {t: sum(r.tag == t for r in found) for t in spec.tags}
+            return respond(
+                request,
+                templates,
+                "screen.html",
+                Table(f"screen_{concept_name}_{period}", web_edgar.SCREEN_COLUMNS, rows),
+                by_tag=by_tag,
+                **context,
+            )
+        tag = params.get("tag") or spec.tags[0]
+        if tag not in spec.tags:
+            raise HTTPException(400, f"{tag!r} is not a tag of {concept_name}")
+        context["tag"] = tag
+        name = f"frames_{tag}_{_slug(spec.unit)}_{period}"
+        try:
+            with db() as con, usfin_http.Client(con, settings=settings) as client:
+                frame = edgar_frames.get_frame(
+                    con, client, taxonomy=spec.taxonomy, tag=tag, unit=spec.unit, period=period,
+                    now=scheduler.clock(), raw_dir=settings.raw_dir,
+                )  # fmt: skip
+        except (ConfigError, usfin_http.HttpError, edgar_frames.FramesError) as exc:
+            status = 503 if isinstance(exc, ConfigError) else 502
+            if isinstance(exc, edgar_frames.FramesError) and " answered 404" in str(exc):
+                status = 404
+            if wants_csv(request):
+                return PlainTextResponse(f"{exc}\n", status_code=status)
+            return templates.TemplateResponse(
+                request,
+                "screen.html",
+                {"table": Table(name, ()), "frames_error": str(exc), **context},
+                status_code=status,
+            )
+        points = sorted(frame.points, key=lambda p: (-p.value, p.cik))
+        rows = [{"rank": i, **vars(p)} for i, p in enumerate(points, 1)]
+        return respond(
+            request,
+            templates,
+            "screen.html",
+            Table(name, web_edgar.FRAME_COLUMNS, rows),
+            frame=frame,
             **context,
         )
 
