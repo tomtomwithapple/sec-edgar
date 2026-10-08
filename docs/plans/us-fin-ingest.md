@@ -17,7 +17,7 @@ parser bug must never mean re-downloading gigabytes from SEC.
 
 When this is done, these are true (each one is covered by at least one slice's test):
 
-- **C1 Raw first.** Every HTTP response is stored on disk, content-addressed by SHA-256, with a
+- **C1 Raw first.** Every final HTTP response (after retries; retried 429/5xx attempts carry no data and are not kept) is stored on disk, content-addressed by SHA-256, with a
   `raw_response` row (source, dataset, url, fetched_at, http_status, sha256, blob_path, bytes)
   written *before* parsing. `usfin reparse <job>` rebuilds that job's normalized rows from stored
   raw responses with no HTTP request made.
