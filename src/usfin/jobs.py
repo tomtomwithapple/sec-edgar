@@ -15,6 +15,9 @@ fetching: its `compute(ctx, key)` runs per key in its own transaction and return
 A job's `after_key(ctx, key)` runs after a key fully succeeded, in its own transaction (never on
 reparse): bookkeeping such as closing the key's `pending_doc` rows.
 
+A job's `keys` or `fetch` may raise `JobSkipped` (job `edgar_bulk` on low disk): the run stops
+there and records `skipped` with the reason, unless an earlier key failed.
+
 SEC jobs (named `edgar_*`) record `skipped`, with no request, while `http.SEC_BLOCK` is open (the
 10 minutes after a SEC 403); the run that met the 403 records `failed` and runs no further key.
 
@@ -49,6 +52,12 @@ from usfin.settings import Settings, load_settings
 ET = ZoneInfo("America/New_York")
 TRIGGERS = ("scheduled", "manual", "catchup", "chained")
 log = logging.getLogger("usfin.jobs")
+
+
+class JobSkipped(Exception):
+    """Raised by a job's `keys` or `fetch` when the run must not go on (e.g. too little free
+    disk for a bulk download): the run stops there and records `skipped` with this message
+    (keys done before it keep their work), unless another key already failed."""
 
 
 class UnknownJob(KeyError):
@@ -137,6 +146,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.edgar.dailyindex",
     "usfin.sources.edgar.form4",
     "usfin.sources.edgar.sched13",
+    "usfin.sources.edgar.bulk",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
@@ -327,6 +337,7 @@ def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any])
     ctx = JobContext(job=job, con=con, run_id=run_id, watermarks=dict(before), **ctx_args)
     rows = 0
     key_errors: dict[str, str] = {}
+    skipped: str | None = None
     try:
         keys = job.key_list(ctx)
         for i, key in enumerate(keys):
@@ -335,6 +346,11 @@ def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any])
                 rows += _run_key(ctx, key)
                 if key in ctx._proposed:
                     set_watermark(con, job.name, key, ctx._proposed.pop(key), today=ctx.today)
+            except JobSkipped as exc:
+                ctx._proposed.pop(key, None)
+                skipped = f"{key}: {exc}"
+                log.warning("job %s skipped at key %s: %s", job.name, key, exc)
+                break
             except Exception as exc:
                 ctx._proposed.pop(key, None)
                 key_errors[key] = f"{type(exc).__name__}: {exc}"
@@ -344,14 +360,20 @@ def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any])
                     for rest in keys[i + 1 :]:  # every SEC request would be refused now
                         key_errors[rest] = "not run: SEC blocked"
                     break
+    except JobSkipped as exc:  # keys() itself said not to run
+        skipped = str(exc)
+        log.warning("job %s skipped: %s", job.name, exc)
     except Exception as exc:  # keys() itself failed
         key_errors["*"] = f"{type(exc).__name__}: {exc}"
         log.error("job %s failed: %s", job.name, key_errors["*"])
         log.debug("job %s traceback", job.name, exc_info=True)
     finally:
         ctx.close()
-    status = "failed" if key_errors else "ok"
-    error = "\n".join(f"{k}: {v}" for k, v in key_errors.items()) or None
+    status = "failed" if key_errors else "skipped" if skipped else "ok"
+    lines = [f"{k}: {v}" for k, v in key_errors.items()]
+    if skipped and key_errors:
+        lines.append(f"skipped {skipped}")
+    error = "\n".join(lines) or skipped
     con.execute(
         "UPDATE job_run SET finished_at = ?, status = ?, rows_upserted = ?,"
         " watermark_after = ?, error = ? WHERE id = ?",

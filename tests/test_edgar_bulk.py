@@ -186,9 +186,18 @@ def test_companyfacts_zip_streams_to_raw_as_zip_and_members_parse_in_place(
     assert not [n for n in blobs if n.endswith(".json")] and len(blobs) == 2  # HEAD .gz, ZIP
 
 
+def _company(settings, cik, ticker):
+    with store.session(settings.db_path, wait=0) as con:
+        con.execute(
+            "INSERT INTO edgar_company VALUES (?, ?, 'x', ?, true, now()::TIMESTAMP)",
+            [cik, ticker, ticker],
+        )
+
+
 def test_submissions_members_use_the_per_cik_parser_main_document_before_its_page(
     settings, sec, disk, cli_env
 ):
+    _company(settings, 320193, "AAPL")
     out = _backfill("submissions")
     assert out.exit_code == 0, out.output
     # 7 recent filings + 4 on the page, every one with the company as party
@@ -267,3 +276,32 @@ def test_an_empty_member_is_recorded_with_its_crc_and_no_rows(settings, sec, dis
         ("CIK0000022370.json",),
         ("CIK0000320193.json",),
     ]
+
+
+def test_submissions_load_only_companies_in_edgar_company_with_their_pages(
+    settings, sec, disk, cli_env
+):
+    # Decisions after S26 (2): only CIKs in edgar_company (active or not), pages included
+    _company(settings, 19617, "JPM")
+    out = _backfill("submissions")
+    assert out.exit_code == 0, out.output
+    assert "parsed 0," in out.output and "not in edgar_company 2" in out.output
+    assert _query(settings, "SELECT count(*) FROM edgar_filing") == [(0,)]
+    assert _query(settings, "SELECT count(*) FROM edgar_bulk_member") == [(0,)]
+    _company(settings, 320193, "AAPL")
+    with store.session(settings.db_path, wait=0) as con:
+        con.execute("UPDATE edgar_company SET active = false WHERE cik = 320193")
+    out = _backfill("submissions", "--reuse")
+    assert out.exit_code == 0, out.output
+    assert "parsed 2," in out.output and "not in edgar_company 0" in out.output
+    assert _query(settings, "SELECT name FROM edgar_bulk_member ORDER BY name") == [
+        ("CIK0000320193-submissions-001.json",),
+        ("CIK0000320193.json",),
+    ]
+    assert _query(settings, "SELECT count(*) FROM edgar_filing") == [(11,)]
+
+
+def test_companyfacts_are_not_filtered_by_edgar_company(settings, sec, disk, cli_env):
+    out = _backfill("companyfacts")
+    assert out.exit_code == 0, out.output
+    assert "parsed 2," in out.output and "not in edgar_company" not in out.output

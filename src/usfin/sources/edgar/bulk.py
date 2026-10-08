@@ -21,9 +21,17 @@ companyfacts the sampled facts are also copied into scratch DuckDB files with an
 `xbrl_fact` primary key (S21: 91 vs 21 bytes per fact), the user's lever if the full load does not
 fit. Acceptance times of bulk submissions members are read as S20 did (`fetched_at` not passed;
 see the plan's Submissions note).
+
+*(S27.)* Submissions members are loaded only for CIKs in `edgar_company` (active or not), pages
+included (`Spec.companies_only`; the ~985 000 other filers stay out). Only a `--limit` sample is
+copied into scratch files; a full load records its cost without them. Job `edgar_bulk` (Sun
+03:00 ET, calendar any) re-downloads both ZIPs through the guard — `disk_low` alert and a
+`skipped` run when one does not fit — re-parses the members whose CRC changed (at most
+`USFIN_BULK_LIMIT` per ZIP when set), then prunes the bulk blobs to the newest 2 per dataset.
 """
 
 import json
+import logging
 import tempfile
 import time
 import zipfile
@@ -36,7 +44,7 @@ from typing import Any
 
 import duckdb
 
-from usfin import http, raw
+from usfin import alerts, http, jobs, raw
 from usfin.settings import Settings
 from usfin.sources.edgar import companyfacts, submissions
 
@@ -46,6 +54,7 @@ MEMBERS = "edgar_bulk_member"
 ESTIMATES = "edgar_bulk_estimate"
 GUARD_EVERY = 1000
 GIB = 2**30
+log = logging.getLogger("usfin.edgar.bulk")
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,8 @@ class Spec:
     raw_dataset: str
     store: Callable[..., Any]
     name_re: Any
+    companies_only: bool = False
+    """Load only members whose CIK is in `edgar_company` (Decisions after S26 (2))."""
 
     def cik_of(self, member: str) -> int | None:
         m = self.name_re.fullmatch(member)
@@ -70,6 +81,7 @@ DATASETS: Mapping[str, Spec] = {
             con, doc, name=name, raw_id=raw_id
         ).filings,
         submissions.NAME,
+        companies_only=True,
     ),
     "companyfacts": Spec(
         "companyfacts",
@@ -227,10 +239,18 @@ def select_members(
     return [todo[int(k * step)] for k in range(limit)]
 
 
+def company_ciks(con: duckdb.DuckDBPyConnection) -> set[int]:
+    """Every CIK in `edgar_company`, active or not."""
+    return {r[0] for r in con.execute("SELECT DISTINCT cik FROM edgar_company").fetchall()}
+
+
 @dataclass
 class Loaded:
     members_total: int = 0
+    """Members a full load would parse: the ZIP's, less those `filtered`."""
     member_bytes_total: int = 0
+    filtered: int = 0
+    """Members left out because their CIK is not in `edgar_company` (submissions only)."""
     parsed: int = 0
     member_bytes_parsed: int = 0
     rows: int = 0
@@ -262,6 +282,11 @@ def load(
     started = time.monotonic()
     with raw.open(con, raw_id, raw_dir=settings.raw_dir) as fh, zipfile.ZipFile(fh) as zf:
         infos = [i for i in zf.infolist() if not i.is_dir()]
+        if spec.companies_only:
+            wanted = company_ciks(con)
+            kept = [i for i in infos if spec.cik_of(i.filename) in wanted]
+            out.filtered = len(infos) - len(kept)
+            infos = kept
         out.members_total = len(infos)
         out.member_bytes_total = sum(i.file_size for i in infos)
         for info in select_members(infos, done=done, limit=limit, ciks=ciks, spec=spec):
@@ -482,3 +507,73 @@ def estimate_lines(est: Estimate, settings: Settings, free: int | None = None) -
         lines.append(f"  full load: {g.describe()} → {'fits' if g.ok else 'does not fit'}")
     return lines
 
+
+
+# --- job edgar_bulk (weekly reconcile) -----------------------------------------------------------
+
+PRUNE_KEY = "prune"
+KEEP = 2
+
+
+def _job_fetch(ctx: "jobs.JobContext", key: str) -> list[int]:
+    """One ZIP: HEAD, guard, download, parse the members whose CRC changed. Or, for key
+    `prune`, the raw store's bulk blobs down to the newest `KEEP` per dataset."""
+    if key == PRUNE_KEY:
+        ctx.memo[key] = raw.prune(ctx.con, keep=KEEP, raw_dir=ctx.settings.raw_dir)
+        return []
+    spec = DATASETS[key]
+    limit = ctx.settings.bulk_limit
+    g = guard(ctx.con, ctx.settings, spec, head(ctx.client, spec), limit=limit)
+    if not g.ok:
+        _disk_low(ctx, spec, g)
+        raise jobs.JobSkipped(f"disk low: {g.describe()}; not downloading {spec.name}.zip")
+    raw_id = download(ctx.client, spec)
+    loaded = load(ctx.con, ctx.settings, spec, raw_id, limit=limit)
+    ctx.memo[key] = loaded
+    log.info(
+        "edgar_bulk %s: raw %s, members %s, parsed %s (CRC changed), rows %s, filtered %s,"
+        " errors %s in %.1f s",
+        key, raw_id, loaded.members_total, loaded.parsed, loaded.rows, loaded.filtered,
+        len(loaded.errors or []), loaded.seconds,
+    )  # fmt: skip
+    if loaded.stopped is not None:
+        _disk_low(ctx, spec, loaded.stopped)
+        raise jobs.JobSkipped(
+            f"disk low: {loaded.stopped.describe()}; stopped after {loaded.parsed} members"
+        )
+    if loaded.errors:
+        listed = "; ".join(loaded.errors[:5])
+        raise BulkError(f"{len(loaded.errors)} malformed members (others committed): {listed}")
+    ctx.advance(key, ctx.today)
+    return []
+
+
+def _disk_low(ctx: "jobs.JobContext", spec: Spec, g: Guard) -> None:
+    alerts.raise_alert(
+        ctx.con, job=ctx.job.name, rule="disk_low", subject=spec.raw_dataset,
+        detail={"free": g.free, "zip_bytes": g.zip_bytes, "projected": g.projected,
+                "floor": g.floor, "left": g.left, "verdict": g.describe()},
+        now=ctx.now,
+    )  # fmt: skip
+
+
+def _job_rows(ctx: "jobs.JobContext", key: str) -> int:
+    loaded = ctx.memo.get(key)
+    return loaded.rows if isinstance(loaded, Loaded) else 0
+
+
+JOB = jobs.REGISTRY.register(
+    jobs.Job(
+        name="edgar_bulk",
+        keys=("companyfacts", "submissions", PRUNE_KEY),
+        fetch=_job_fetch,
+        parsers={},
+        compute=_job_rows,
+    )
+)
+"""Weekly reconcile (Sun 03:00 ET, calendar any): companyfacts.zip, then submissions.zip, each
+through the free-disk guard and parsed where a member's CRC changed, then `raw prune --keep 2`.
+The members are parsed while the key is fetched (each member commits on its own, which a parser
+inside the runner's transaction could not), so the job has no parsers: `usfin edgar backfill
+… --reuse` replays a stored ZIP. Watermark per dataset = the New York date of the last ZIP
+fully reconciled."""

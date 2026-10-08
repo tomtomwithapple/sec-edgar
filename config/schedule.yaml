@@ -103,3 +103,12 @@ jobs:
                                    # and edgar_reconcile (S25)
     calendar: federal
     due: none
+  edgar_bulk:
+    cron: "0 3 * * sun"            # weekly bulk reconcile: re-downloads companyfacts.zip and
+                                   # submissions.zip through the free-disk guard (disk_low +
+                                   # skipped when they do not fit), re-parses only members whose
+                                   # CRC changed (submissions: edgar_company CIKs only), then
+                                   # prunes the bulk ZIPs to the newest 2 per dataset.
+                                   # USFIN_BULK_LIMIT caps the members parsed per ZIP.
+    calendar: any
+    due: none

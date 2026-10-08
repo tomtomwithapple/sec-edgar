@@ -11,7 +11,8 @@ Only `us-gaap` and `dei` are kept (plan: What › out of scope). Each fact becom
 (cik, taxonomy, tag, unit, accn, period_start, period_end); a restatement is a new `accn`, hence a
 new row, so `xbrl_as_of(d)` (facts with `filed <= d`) answers what was public on a date (C4). A
 known fact is updated only when a column changed (in practice `frame`), so a re-run reports 0
-rows (C2); a fact missing from a later document is kept.
+rows (C2); a fact missing from a later document is kept. The table has no primary key since S27
+(migration 014: the PK's index was ~70 of 90 bytes per fact); `upsert_facts` keeps the key unique.
 
 Every response is archived first (raw dataset `edgar_companyfacts`, source `edgar`). Watermark
 key = the 10-digit CIK, value = its newest `filed`. The registered job drains the CIKs of open
@@ -141,7 +142,8 @@ def store_document(
     cik = int(m.group(1))
     if not isinstance(doc, Mapping):
         raise CompanyFactsError(f"{name}: expected an object, got {type(doc).__name__}")
-    if str(doc.get("cik", "")).lstrip("0") != str(cik):
+    # 8 companyfacts.zip members of 2026-10-08 carry no `cik` key (S27): the name decides then
+    if doc.get("cik") is not None and str(doc["cik"]).lstrip("0") != str(cik):
         raise CompanyFactsError(f"{name}: cik is {doc.get('cik')!r}")
     rows = _fact_rows(doc, cik=cik)
     newest = max((r.fact.filed for r in rows), default=None)
@@ -149,40 +151,54 @@ def store_document(
 
 
 def upsert_facts(con: duckdb.DuckDBPyConnection, rows: Sequence[_Row]) -> int:
-    """Insert new facts and update changed ones; return how many rows were inserted or changed."""
+    """Insert new facts and replace changed ones; return how many keys were inserted or changed.
+
+    `xbrl_fact` has no primary key (migration 014), so uniqueness of `KEY` is kept here: the
+    document's facts are deduplicated by key (the first listed wins), diffed against the stored
+    rows of the same company only (one document = one CIK; the `cik` filter lets DuckDB skip
+    other companies' row groups), and every changed key is deleted and inserted again."""
     if not rows:
         return 0
+    ciks = {r.fact.cik for r in rows}
+    if len(ciks) != 1:
+        raise CompanyFactsError(f"one document holds one company's facts, got CIKs {sorted(ciks)}")
+    (cik,) = ciks
     payload = json.dumps(
         [
             [f.cik, f.taxonomy, f.tag, f.unit, f.accn, f.period_start.isoformat(),
              f.period_end.isoformat(), f.is_instant, repr(f.value), f.fy, f.fp, f.form,
-             f.filed.isoformat(), r.frame]
-            for r in rows
+             f.filed.isoformat(), r.frame, i]
+            for i, r in enumerate(rows)
             for f in (r.fact,)
         ]
     )  # fmt: skip
+    cols = ", ".join((*KEY, *VALUES))
     # one JSON text parameter, not bound row values (see fiscal.upsert_page)
     con.execute(
-        "CREATE OR REPLACE TEMP TABLE _fact_stage AS SELECT r[1]::BIGINT AS cik,"
+        f"CREATE OR REPLACE TEMP TABLE _fact_stage AS SELECT {cols} FROM ("
+        " SELECT r[1]::BIGINT AS cik,"
         " r[2] AS taxonomy, r[3] AS tag, r[4] AS unit, r[5] AS accn, r[6]::DATE AS period_start,"
         " r[7]::DATE AS period_end, r[8]::BOOLEAN AS is_instant, r[9]::DOUBLE AS value,"
-        " r[10]::SMALLINT AS fy, r[11] AS fp, r[12] AS form, r[13]::DATE AS filed, r[14] AS frame"
-        """ FROM (SELECT unnest(json_transform(?, '[["VARCHAR"]]')) AS r)""",
+        " r[10]::INTEGER AS fy, r[11] AS fp, r[12] AS form, r[13]::DATE AS filed, r[14] AS frame,"
+        " r[15]::BIGINT AS seq"
+        """ FROM (SELECT unnest(json_transform(?, '[["VARCHAR"]]')) AS r))"""
+        f" QUALIFY row_number() OVER (PARTITION BY {', '.join(KEY)} ORDER BY seq) = 1",
         [payload],
     )
     on = " AND ".join(f"s.{c} = t.{c}" for c in KEY)
     differs = " OR ".join(f"s.{c} IS DISTINCT FROM t.{c}" for c in VALUES)
     con.execute(
         f"CREATE OR REPLACE TEMP TABLE _fact_changed AS SELECT s.* FROM _fact_stage s"
-        f" LEFT JOIN {TABLE} t ON {on} WHERE t.cik IS NULL OR {differs}"
+        f" LEFT JOIN (SELECT * FROM {TABLE} WHERE cik = ?) t ON {on}"
+        f" WHERE t.cik IS NULL OR {differs}",
+        [cik],
     )
     changed = con.execute("SELECT count(*) FROM _fact_changed").fetchone()[0]
     if changed:
-        sets = ", ".join(f"{c} = excluded.{c}" for c in VALUES)
         con.execute(
-            f"INSERT INTO {TABLE} SELECT * FROM _fact_changed"
-            f" ON CONFLICT ({', '.join(KEY)}) DO UPDATE SET {sets}"
+            f"DELETE FROM {TABLE} t USING _fact_changed s WHERE t.cik = ? AND {on}", [cik]
         )
+        con.execute(f"INSERT INTO {TABLE} ({cols}) SELECT {cols} FROM _fact_changed")
     con.execute("DROP TABLE _fact_stage")
     con.execute("DROP TABLE _fact_changed")
     return int(changed)

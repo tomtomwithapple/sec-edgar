@@ -25,6 +25,9 @@ class Settings:
     alert_webhook_url: str | None
     min_free_gb: float = 10.0
     """`USFIN_MIN_FREE_GB`: free-disk floor for EDGAR bulk downloads (GiB)."""
+    bulk_limit: int | None = None
+    """`USFIN_BULK_LIMIT`: job `edgar_bulk` parses at most this many changed members per ZIP
+    (spread evenly, as `usfin edgar backfill --limit`); unset = every changed member."""
 
 
 def _merged(env_file: Path | None) -> Mapping[str, str | None]:
@@ -53,6 +56,14 @@ def load_settings(env_file: Path | None = None) -> Settings:
     except ValueError:
         raise ConfigError(f"USFIN_MIN_FREE_GB must be a number of GiB, got {raw_floor!r}") from None
 
+    raw_limit = get("USFIN_BULK_LIMIT")
+    try:
+        bulk_limit = None if raw_limit is None else int(raw_limit)
+    except ValueError:
+        raise ConfigError(f"USFIN_BULK_LIMIT must be a whole number, got {raw_limit!r}") from None
+    if bulk_limit is not None and bulk_limit < 1:
+        raise ConfigError(f"USFIN_BULK_LIMIT must be at least 1, got {raw_limit!r}")
+
     return Settings(
         db_path=Path(get("USFIN_DB") or "data/usfin.duckdb"),
         raw_dir=Path(get("USFIN_RAW") or "raw"),
@@ -64,4 +75,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         fred_api_key=get("FRED_API_KEY"),
         alert_webhook_url=get("ALERT_WEBHOOK_URL"),
         min_free_gb=min_free_gb,
+        bulk_limit=bulk_limit,
     )

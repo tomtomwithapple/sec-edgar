@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S26 done — S18 blocked (FRED_API_KEY) — next: S27
+Status: S27 done — S18 blocked (FRED_API_KEY) — next: S28
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -234,7 +234,8 @@ deprecated in favour of `httpx2`; httpx2 is not in the stack, so pytest filters 
   `BLS_CONTACT_EMAIL` (required for www.bls.gov, the release calendar — added in S17),
   `ALERT_WEBHOOK_URL` (optional), `USFIN_DB` (default `data/usfin.duckdb`), `USFIN_RAW`
   (default `raw/`), `USFIN_CONFIG` (default `config/`), `USFIN_LOCK_WAIT` (seconds, default 600),
-  `USFIN_MIN_FREE_GB` (default 10; free-disk floor for bulk downloads).
+  `USFIN_MIN_FREE_GB` (default 10; free-disk floor for bulk downloads), `USFIN_BULK_LIMIT`
+  (optional; members per ZIP job `edgar_bulk` parses — added in S27).
 - Non-SEC hosts get `User-Agent: usfin/<version> (+https://github.com/tomtomtomdev/sec-edgar)`,
   except www.bls.gov: `usfin/<version> (<BLS_CONTACT_EMAIL>)` (amended in S17: it 403s the URL form).
 - Commit style follows the sibling repos: `S<n>: <what the slice found>`; plan-only commits
@@ -376,6 +377,9 @@ key's fetch and parses, in its own transaction, and its rows count toward `rows_
 job has `fetch` returning `[]` and `parsers={}`, so reparse has nothing to replay for it.
 *(Amended in S16.)* `JobContext.memo` is a per-run dict shared by fetch and parsers, for a job
 whose one request serves several watermark keys (BLS: seven series keys, one query).
+*(Amended in S27.)* A job's `keys` or `fetch` may raise `jobs.JobSkipped(reason)`: the run stops
+at that key and records `skipped` with the reason (keys done before it keep their work and
+watermarks), or `failed` if an earlier key failed. `edgar_bulk` uses it for the free-disk guard.
 *(Amended in S22.)* `Job(…, after_key=fn)`: `fn(ctx, key)` runs after a key's fetch, parses and
 compute all succeeded, in its own transaction, never on reparse — bookkeeping such as closing the
 key's `pending_doc` rows. SEC jobs skip inside the SEC block window (How › HTTP).
@@ -766,7 +770,13 @@ zero-padded in URLs, stored as BIGINT.
   forms seen: 10-K, 10-Q, 8-K, 10-K/A, 10-Q/A, DEF 14A. `frame` sits on one filing per period and
   SEC moves it to the latest, so it is the column a refetch updates (a fact absent from a later
   document is kept). Types: `cik` BIGINT, `fy` SMALLINT, dates DATE, `value` DOUBLE (no |val| above
-  2^53 in either company), strings VARCHAR (DuckDB dictionary-compresses them). No `raw_id`: facts
+  2^53 in either company), strings VARCHAR (DuckDB dictionary-compresses them). **Wrong for the
+  full ZIP (found in S27):** `fy` is INTEGER, not SMALLINT — CIRCOR International (CIK 1091883)
+  files fy `44561` (an Excel serial date for 2021-12-31) on its 2021 10-Q facts, which failed the
+  whole member (migration `015_xbrl_fact_fy_integer.sql`); and the `cik` key is **absent** from
+  8 companyfacts.zip members (funds with only `vip`/`cef`/`oef` facts, plus Star Mountain Lower
+  Middle-Market Capital 4 588 and ZeroStack 6 027 facts), so the member name decides when `cik`
+  is missing (a present, different `cik` is still refused). No `raw_id`: facts
   are not versioned rows, every accn is its own row. Migration `009_xbrl_fact.sql` with macro
   `xbrl_as_of(d)` = `SELECT * FROM xbrl_fact WHERE filed <= CAST(d AS DATE)`. Module
   `usfin.sources.edgar.companyfacts`: `store_document(con, doc, name=)` (name
@@ -777,7 +787,8 @@ zero-padded in URLs, stored as BIGINT.
   (75 081 facts copied into fresh DuckDB files, checkpointed): the 7-column PK's ART index is about
   three quarters of the table. S26's projection must use the with-PK figure; if the full load does
   not fit, dropping the PK (the upsert already finds changes by anti-join; only its `ON CONFLICT`
-  needs it) is the first lever — the user's call.
+  needs it) is the first lever — the user's call. *(Decided after S26, built in S27: no PK, see
+  Bulk › Decisions after S26.)*
 - Feed (job `edgar_feed`, every 15 min 06:00–22:00 ET on federal days, raw dataset
   `edgar_feed`): `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom&count=100`
   paged with `start=` until an entry's `updated` is ≤ the watermark (newest `updated` seen) or 10
@@ -1018,6 +1029,28 @@ zero-padded in URLs, stored as BIGINT.
   midnight (members dated 2026-10-07 00:20, newest `filingDate` 10-06) and its strings equal the
   per-CIK JSON fetched later that day for every shared filing (JPMorgan 26 233, Apple 1 000,
   incl. 102 dated 10-06), so converting every time (no `fetched_at`) agrees with the S23 rule.
+  *(Amended in S27.)* **No PK:** migration `014_xbrl_fact_no_pk.sql` rebuilds `xbrl_fact` (same
+  columns, NOT NULLs and CHECK; DuckDB cannot drop a PK in place) and recreates `xbrl_as_of`;
+  `companyfacts.upsert_facts` keeps the 7-column key unique itself: a document's facts are
+  deduplicated by key (first listed wins), diffed against the stored rows **of that CIK only**
+  (`WHERE cik = ?`, so DuckDB skips other companies' row groups), and every changed key is
+  deleted and inserted again (a duplicate already stored heals the same way). **Submissions
+  filter:** `Spec.companies_only` — a submissions member (main or `-submissions-NNN` page) loads
+  only when its CIK is in `edgar_company`; `Loaded.members_total` and the estimate count only
+  those, so the guard projects the filtered load (the CLI prints `not in edgar_company N
+  members`). Only a `--limit` sample is copied into scratch files; a full load records its cost
+  (an estimate row with `scratch_*` NULL) without them. **Job `edgar_bulk`** (module `bulk`,
+  keys `companyfacts`, `submissions`, `prune`, no parsers): per dataset HEAD → guard (projection
+  from the newest estimate, capped by `USFIN_BULK_LIMIT`) → download → `load` (members whose CRC
+  changed, each committing alone, at most `USFIN_BULK_LIMIT` spread evenly when set) — the members
+  are parsed while the key is fetched, since a parser runs inside the runner's transaction and a
+  member commits on its own; `compute` reports the rows. A guard that does not fit (before the
+  download or crossed mid-load) raises `disk_low` (subject = raw dataset, detail = the numbers)
+  and `jobs.JobSkipped`, which stops the run as `skipped` (keys done before it keep their work).
+  Malformed members fail that dataset's key after the others committed. Key `prune` runs
+  `raw.prune(keep=2)`. Watermark per dataset = the New York date of the last ZIP fully
+  reconciled. Reparse has nothing to replay for the job: `usfin edgar backfill … --reuse`
+  replays a stored ZIP. Schedule `0 3 * * sun`, `any`, `due: none`.
 - Frames (raw dataset `edgar_frames`): `data.sec.gov/api/xbrl/frames/{taxonomy}/{tag}/{unit}/{period}.json`
   on demand → `frames_cache(key PK, fetched_at, raw_id)`, TTL 24 h; never written to `xbrl_fact`.
 - Concept map `config/concepts.yaml` (e.g. `revenue: [Revenues,
@@ -1471,7 +1504,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S24 Form 4 | done | 2026-10-08 | 6786edc | 14 new (test_form4); 1 changed (test_edgar_feed: the feed chain now runs `edgar_form4` too, so the test no longer queues a form4 row it expects left open); suite 474 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get` (raw 776–787, 12 requests, dataset `probe_form4`): 6 folder `index.json` + 6 XMLs; fixtures are 4 of them byte for byte, untrimmed — Costco 0000909832-26-000090 (non-derivative; index-only, queued under **owner** 1928633, and the folder answered under that CIK), StageWise 0001213900-26-107674 (sale + indirect `nonDerivativeHolding`), Skyworks 0001193125-26-417218 (2 non-derivative + 10 derivative RSU lines, flags `true`/`false`, footnote-only exercise price/dates; 27 KB, kept whole rather than cut) and BNB Standard 0000921895-26-002756 (**4/A by two reporting owners**, derivative transactions + `derivativeHolding`, footnote-only prices/dates). No smaller derivative-only Form 4 was among the 4 sampled. `usfin run edgar_form4` on `data/usfin.duckdb` with a scratch config capping 50 (migration 011 applied, 23:34 ET on 10-07): `#41 ok rows 220` in 36 s — **100 requests (50 × 2), all 200, 34.6 s, 0.51 MB of XML**; 50 `insider_filing` (all `4`: the 50 oldest were feed-queued at 03:06Z, so their queued CIK was the issuer; 0 mismatches between queued CIK, `edgar_filing.cik` and the XML issuer), 54 owners (2 joint filings), 220 lines (118 non-derivative transactions, 16 non-derivative holdings, 71 derivative transactions, 15 derivative holdings; codes M 55, A 53, S 50, F 16, C 8, J 6, P 1), 202 footnotes; 10 transactions with NULL price, every one footnote-only; pending `form4` 4 499 → 4 449 open. `usfin reparse edgar_form4` replayed 100 responses, **rows 0**, the four tables hash-identical, 1.1 s. **Projection:** ~0.7 s/document → the 4 449 left ≈ 52 min of requests, ~15 runs at the default cap 300 (~3.5 min each, inside the 15-min feed cycle). Plan amended (How › SEC EDGAR › Form 4: one table became four — owners, holdings, derivative terms and footnote-only values did not fit `insider_txn` alone —, element mapping, multiple-owner and amendment rules, fetch path under the queued CIK, per-accession drain with the `max_docs_per_run` cap; Feed and Daily index: chain now includes `edgar_form4`). |
 | S25 Schedule 13D/G | done | 2026-10-08 | 9205e4b | 15 new (test_sched13); 1 changed (test_edgar_feed: the feed chain now runs `edgar_sched13` too); suite 489 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes (raw 888–917, 30 requests, dataset `probe_sched13`): 7 folder `index.json` + 23 `primary_doc.xml`; fixtures are 5 filings byte for byte, untrimmed — OnKure SCHEDULE 13G 0001104659-26-114447 (5 joint persons, **no CIK element on any 13G person**), Calamos Aksia SCHEDULE 13D 0001104659-26-114474 (one person with `reportingPersonCIK`), Mid Penn SCHEDULE 13D/A 0001193125-26-416960 (amendment 7, 2 of 3 persons `reportingPersonNoCIK` Y; index-only, queued under reporting person 1548007, subject 879635 from the XML), Meteora SCHEDULE 13G/A 0001905106-26-000171 (amendment 11, no `memberGroup`) and JPMorgan's legacy **SC 13G** 0000019617-24-000609 (folder lists only its `.htm`). Structured XML since 2024-12-18 confirmed: newest legacy `SC 13D/G` name in `edgar_filing` is 2024-12-04, all 491 queued rows are `SCHEDULE 13D/G` (+/A). `usfin run edgar_sched13` on `data/usfin.duckdb` with a scratch config capping 50 (migration 012 applied, 23:46 ET on 10-07): `#42 ok rows 162` in 39.6 s — **100 requests (50 × 2), all 200, 38.6 s, 0.55 MB of XML** (~0.77 s/doc); 50 `ownership_filing` (13D 6, 13D/A 9, 13G 13, 13G/A 22; 31 amendments, up to no. 26; 47 subjects; 1 to 12 persons each), 162 `ownership_stake` rows — 105 13G persons all without CIK, 57 13D persons of which 29 without —; percent 0–79.3, every person with shares, percent and event date; **legacy skipped 0** (none queued; the skip is covered by the fixture); 1 of 50 queued under a non-subject CIK; pending `sched13` 491 → 441 open. `usfin reparse edgar_sched13` replayed 150 responses (incl. the 50 Form 4 folder listings of the shared `edgar_filing_index`), **rows 0**, both tables and the insider tables hash-identical, 0.9 s. **Projection:** ~0.77 s/doc → the 441 left ≈ 5.7 min of requests, 2 runs at the default cap 300. Plan amended (How › SEC EDGAR › Schedule 13D/G: 13G persons never carry a CIK, so `filer_cik` is NULL for all of them, not an edge case; `ownership_filing` added for subject/CUSIPs/amendment/legacy count; legacy skip = folder listing + `legacy` row; element mapping; fetch, queue and cap as Form 4; Feed and Daily index: chains now end with `edgar_sched13`). |
 | S26 EDGAR bulk backfill | done | 2026-10-08 | 5f6e57d | 20 new (test_edgar_bulk 8, test_disk_guard 10, test_http 2 for a stream cut mid-body); suite 509 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Free disk at start 19.6 GiB (`df` 20.6 M KB; DB 99 MB, raw 13 MB); `--check` HEADs: **companyfacts.zip 1 410 110 606 bytes (1.31 GiB), submissions.zip 1 567 815 592 bytes (1.46 GiB)** → 19.6 − 2.77 = 16.85 GiB ≥ floor 10, both allowed. The first companyfacts download died after ~10 min with no blob or row (cause not captured; an httpx read error mid-body escaped the client) → client now retries a cut body. Then companyfacts **618 s** (~2.2 MB/s), submissions **650 s**, each downloaded once and parsed with `--reuse` after. Free disk moved outside usfin during the run (19.6 → ~63 GiB mid-run, something else on the Mac freed space); `df` after: 52.0 GiB free (54 509 176 KB), DB 219 MB, raw 2.8 GB (both ZIPs kept for S27). **companyfacts**: 20 438 members (17.99 GiB uncompressed); sample of 200 spread members: 199 parsed, 1 154 272 facts in 14.7 s (13.5 members/s, ~78 500 facts/s); 1 member was `{}` (62 such in the ZIP: now recorded, no rows); DB 99.4 → 192.7 MB. **Projection with the PK: DB-delta 8.93 GiB per member / 9.05 GiB by member bytes; scratch xbrl_fact 90 B/fact → 9.93 / 10.07 GiB (~118 M facts). Without the PK: 20 B/fact → 2.21 / 2.24 GiB.** Parse time ~25 min (+ ~10 min download). **submissions**: 993 246 members (5.36 GiB uncompressed); two 200-member samples: 4 190 filings in 17.6 s (11.4 members/s, DB +23.6 MB) and 5 521 in 13.3 s (15.1 members/s, DB +3.7 MB) — the DB-delta projection swung 136 → 17 GiB (allocation churn, not row cost; plan amended); scratch of the sample 421 B/filing (≈ 9 blocks, overhead-bound) → 10.6–11.0 GiB; **calibrated on the 198 415 filings already stored: 165 B/filing (party + PKs) × ~24 M filings ≈ 3.7 GiB**. **Parse time ~18–24 h** (1 064–1 453 min, ~70–90 ms per member on a 200 MB DB) — the full submissions load is a day-long run, which S27 must plan for. **Fit:** full load = companyfacts + submissions + 2.8 GiB of ZIPs (5.5 GiB once prune keeps 2 per dataset): with the PK ≈ 10.1 + 3.7 + 2.8 = 16.6 GiB, without ≈ 2.2 + 3.7 + 2.8 = 8.7 GiB. Against the ~18–19.6 GiB free at slice start, **neither leaves the 10 GiB floor** (≈ 1–3 GiB left with PK, ≈ 9.3–10.9 GiB without, at or just under the floor); against today's 52 GiB both fit. `--estimate` prints `fits` for both (guard uses the newest DB-delta: companyfacts 9.05, submissions 16.97 GiB). The PK decision (S21 lever) and whether the free space stays at 52 GiB are the user's call before S27. Bulk acceptance times checked against S23's rule: ZIP built 2026-10-07 00:20, newest filingDate 10-06; strings equal the per-CIK JSON for all shared filings (JPMorgan 26 233, Apple 1 000) → converting all is right. Plan amended (How › SEC EDGAR › Bulk: CLI flags, HEAD dataset, GiB, spread sample, `{}` members, stream-cut retry, DB-delta unreliable + scratch/calibrated measure; Submissions note). |
-| S27 Weekly bulk reconcile and prune | todo | | | | |
+| S27 Weekly bulk reconcile and prune | done | 2026-10-08 | | 23 new (test_edgar_bulk_reconcile 10, test_xbrl_fact_no_pk 9, test_edgar_bulk 2, test_disk_guard 2); suite 532 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Free disk at start 47.9 GiB (`df` 50 182 532 KB), DB 219 MB, raw 2.8 GB. Migration 014 (no PK) on the real DB in 1.6 s: 1 280 130 facts kept, 0 duplicate keys, `xbrl_as_of` works. **Run 1** `USFIN_BULK_LIMIT=200 usfin run edgar_bulk` (#43, 16 min 52 s, almost all download): new ZIPs (companyfacts 1 410 169 309 B, submissions 1 568 085 395 B, SEC rebuilt both since S26), guard passed, 200 members each; **companyfacts key failed on one member: CIRCOR (CIK 1091883) files `fy` 44561** (an Excel serial date) → S21's SMALLINT was wrong, migration 015 makes `fy` INTEGER; submissions ok; prune kept 2 per dataset (nothing pruned). **Projection recomputed** (no PK, ticker CIKs): companyfacts 20 B/fact × ~118 M ≈ 2.2 GiB; submissions only 10 757 of 993 246 members (8 016 CIKs, 19.7 % of member bytes) ≈ 4.7 M filings × 165 B ≈ 0.8 GiB; + 2.8 GiB for the second ZIP pair ≈ 5.8 GiB vs 43.0 GiB free − 10 floor → fits (even the guard's conservative DB-delta figures, 9.05 + 16.97 GiB, fit). **Full load** (`--reuse` on the job's ZIPs): companyfacts 28 min 2 s (parse 1 674 s, ~12 members/s, ~72 000 facts/s), 20 034 parsed, **120 221 183 facts**, 61 `{}`, **8 errors: members with no `cik` key** (funds with only vip/cef/oef facts; Star Mountain 4 588 and ZeroStack 6 027 facts) → the name now decides when `cik` is absent; the 8 reloaded with `--cik` (9 811 facts); DB 0.21 → 2.57 GB (+2.36 GB, ~20 B/fact as projected). Submissions 24 min 8 s (parse 1 444 s), 10 555 of 10 759 wanted members (the rest stored by the samples), **6 601 482 filings**, 982 713 members not in `edgar_company` skipped, 0 errors; DB → 4.47 GB (+1.90 GB, ~288 B/filing incl. parties and pages, above the 165 B calibrated — churn of 10 k transactions). Totals: `xbrl_fact` 122 683 478 facts / 17 133 CIKs, **0 duplicate keys**; `edgar_filing` 6 880 951 (13 693 CIKs), parties 6 969 828, pages 2 744. **Run 2** uncapped (#44, 12 min 48 s): same SHA-256 for both ZIPs (one blob each, nothing new on disk), **0 members changed, rows 0**, watermarks companyfacts/submissions = 2026-10-08, prune nothing. End: free 38.3 GiB (40 188 000 KB), DB 4.47 GB, raw 5.6 GB. Plan amended: Companyfacts types (`fy` INTEGER, absent `cik`), Bulk (no-PK upsert, filter, job, scratch only for samples), Jobs (`JobSkipped`), env `USFIN_BULK_LIMIT`. |
 | S28 Frames and concept map | todo | | | | |
 | S29 Nasdaq Trader snapshot | todo | | | | |
 | S30 Symbol history diff | todo | | | | |

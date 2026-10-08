@@ -607,11 +607,19 @@ def edgar_backfill_cmd(
             f" skipped {loaded.skipped}, empty {loaded.empty}, errors {len(loaded.errors)}"
             f" in {loaded.seconds:.1f} s"
         )
+        if spec.companies_only:
+            typer.echo(f"not in edgar_company {loaded.filtered} members (not loaded)")
         for err in loaded.errors[:5]:
             typer.echo(f"  error: {err}", err=True)
         if sample and loaded.parsed:
             after = edgar_bulk.db_bytes(con, settings)
-            scratch = edgar_bulk.measure(con, settings, spec, loaded.ciks)
+            # a --limit sample is copied into scratch files to measure its rows; a full load's
+            # rows are the whole table (the copies would need as much disk again): not measured
+            scratch = (
+                edgar_bulk.measure(con, settings, spec, loaded.ciks)
+                if limit is not None
+                else (None, None, None)
+            )
             est = edgar_bulk.Estimate(
                 spec.raw_dataset, edgar_bulk._utcnow(), raw_id,
                 edgar_bulk.zip_bytes_of(con, raw_id), loaded.members_total, loaded.parsed,

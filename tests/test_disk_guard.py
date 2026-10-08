@@ -3,6 +3,9 @@ guard, Measure before the full load; C17). `shutil.disk_usage` is patched; the Z
 fixture ZIPs of `test_edgar_bulk` (real member JSON). No request leaves the process.
 """
 
+import io
+import zipfile
+
 import pytest
 import test_edgar_bulk as fixtures
 
@@ -142,6 +145,7 @@ def test_a_known_projection_counts_against_the_floor(settings, sec, disk, cli_en
 def test_a_submissions_sample_is_measured_in_a_scratch_file_too(settings, sec, disk, cli_env):
     # the DB file's own growth over a few hundred small transactions is mostly allocation churn
     # (S26 live: +23.6 MB for 4 190 filings), so the sampled rows are copied into a fresh file
+    fixtures._company(settings, 320193, "AAPL")
     out = _backfill("submissions", "--limit", "2")
     assert out.exit_code == 0, out.output
     ((srows, spk, snopk),) = _query(
@@ -151,3 +155,37 @@ def test_a_submissions_sample_is_measured_in_a_scratch_file_too(settings, sec, d
     assert srows == 11 and spk > 0 and snopk is None
     out = _backfill("submissions", "--estimate")
     assert "projected scratch (with PKs)" in out.output
+
+
+def test_a_full_load_records_its_cost_but_copies_nothing_to_scratch(settings, sec, disk, cli_env):
+    # S27: a full load's rows are the whole table; copying them twice into scratch files would
+    # need as much disk again, so only a --limit sample is measured in scratch files
+    out = _backfill("companyfacts")
+    assert out.exit_code == 0, out.output
+    assert _query(
+        settings,
+        "SELECT members_total, members_sampled, scratch_rows, scratch_bytes_pk"
+        " FROM edgar_bulk_estimate",
+    ) == [(2, 2, None, None)]
+
+
+def test_a_submissions_estimate_counts_only_members_of_edgar_company(
+    settings, sec, disk, cli_env
+):
+    fixtures._company(settings, 320193, "AAPL")
+    # Apple's 2 members plus one of a CIK not in edgar_company (a real 2-byte member, never read)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(sec.bodies["submissions.zip"])) as src, zipfile.ZipFile(
+        buf, "w"
+    ) as dst:
+        for info in src.infolist():
+            dst.writestr(info.filename, src.read(info))
+        other = fixtures.FIXTURES / "bulk" / "CIK0000022370.json"
+        dst.writestr(other.name, other.read_bytes())
+    sec.bodies["submissions.zip"] = buf.getvalue()
+    out = _backfill("submissions", "--limit", "1")
+    assert out.exit_code == 0, out.output
+    # members_total is what a full load would parse: Apple's 2, not the ZIP's 3
+    assert _query(settings, "SELECT members_total, members_sampled FROM edgar_bulk_estimate") == [
+        (2, 1)
+    ]
