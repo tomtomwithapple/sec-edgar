@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S9 done — next: S10
+Status: S10 done — next: S11
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -214,6 +214,9 @@ typer, pyyaml, python-dotenv, pytest, respx and ruff are already used in the sib
 holidays, apscheduler, fastapi, uvicorn, jinja2 and defusedxml are new to this user's projects
 and were **approved by the user on 2026-10-07**. No pandas (CSV export uses `csv`, charts are
 hand-built SVG). No `python-multipart`: every POST endpoint takes only path parameters.
+*(Found in S10.)* starlette 1.7.0 (pulled by fastapi 0.142.2) warns that `TestClient` over httpx is
+deprecated in favour of `httpx2`; httpx2 is not in the stack, so pytest filters that one warning
+(`pyproject.toml` `filterwarnings`) and tests keep using the pinned httpx.
 
 ### Approach
 
@@ -406,6 +409,13 @@ subject, detail, raised_on, raised_at}`. `usfin alerts` lists open alerts newest
 adds acknowledged ones, `usfin alerts ack <id>` is idempotent and exits 1 for an unknown id.
 `db_locked` is not raised yet: a run that cannot open the DB cannot write the `alert` table either
 (S5: no `job_run` row); the scheduler (S10) owns raising it once a session opens.
+*(Amended in S10.)* In `usfin serve` a run that hits `DatabaseLocked` (`RunResult.locked`, also on a
+chained child or a guard skip that could not be logged) is kept in the scheduler's in-memory
+`pending_locked`; the next session the scheduler opens — before its next run, or a one-shot retry
+every 5 min (`db_locked_flush`, lock wait 5 s) — stores one `db_locked` alert per job and New York
+day of the attempt (subject = job, detail `{trigger, at, error}`) and posts it to the webhook.
+`/api/health` shows `pending_db_locked`. Pending alerts are lost if serve stops before the DB frees;
+`usfin run` from a shell still only exits 1 (it has no later session to raise it in).
 
 **Treasury Fiscal Data.** Base `https://api.fiscaldata.treasury.gov/services/api/fiscal_service`
 (all six endpoint versions in the research doc verified by the review). `config/fiscal_data.yaml`
@@ -609,7 +619,28 @@ CronTriggers in `America/New_York` with `misfire_grace_time=3600`; a guard recor
 job_run on non-calendar days. On startup (and therefore after wake, when a missed fire is past
 its grace time) a catch-up pass runs each job once (trigger `catchup`) whose most recent due fire
 is later than its last `ok` run's `started_at` (decision E). `usfin schedule` prints the next 5
-fire times per job. Final schedule:
+fire times per job.
+*(Amended in S10.)* `usfin.scheduler`: `load_schedule(config_dir)` takes every `schedule.yaml` job
+with a `cron` (no cron = not scheduled; `calendar` required); a job in the file but not registered
+is logged and not scheduled. **Day of week must be named (`mon..sun`)**: APScheduler 3's
+`CronTrigger.from_crontab` numbers Monday 0 where cron numbers Sunday 0 (`"0 3 * * 0"` fires on
+Mondays), so a digit in the dow field is a `ConfigError` (edgar_bulk is `0 3 * * sun`, bls_calendar
+`0 6 * * mon`). `Scheduler(settings, registry, clock=)` wraps a `BackgroundScheduler` (tz New York,
+`ThreadPoolExecutor(1)`, job defaults `coalesce`, `max_instances=1`, `misfire_grace_time=3600`); the
+cron target `fire(job)` applies the guard on the clock's New York date and otherwise calls
+`jobs.run_job(trigger='scheduled')` (chains included). The `skipped` row carries the current
+watermarks as `watermark_before` so the day's alert baseline survives a skip. `run_now(job,
+trigger)` adds a one-shot date job with a unique id and `misfire_grace_time=None` on the same worker
+(a second identical request while one is still waiting is dropped, `enqueued: false`). Catch-up
+looks back 14 days for the latest fire on a calendar day and compares it with `max(started_at)` of
+`ok` runs (any trigger; a job never run ok is caught up); APScheduler's in-memory store forgets
+fires from before startup, so catch-up is the only path for them, and an `EVENT_JOB_MISSED` (fire
+missed past the grace while serve was running, e.g. asleep) queues a catch-up when that fire was on
+a calendar day. API (`usfin.web.app.create_app(scheduler)`; the lifespan starts the scheduler, runs
+catch-up and shuts it down, waiting for the running job): `GET /api/health`, `POST
+/api/jobs/{job}/run` → 202 `{job, enqueued, trigger: manual}`, 404 for an unknown job. `usfin serve
+[--host 127.0.0.1] [--port 8660]`, `usfin schedule [--at YYYY-MM-DDTHH:MM]` (fires on calendar days
+only). Final schedule:
 
 | Job | When (ET) | Calendar |
 |---|---|---|
@@ -974,7 +1005,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S7 Fiscal Data client | done | 2026-10-08 | 8981c36 | 31 new (test_fiscal_client); suite 157 passed | `usfin fd probe debt_to_penny --since 2026-09-01` (live) printed 25 rows in 1 page, record_date 2026-09-01 .. 2026-10-06, 11 columns (`CURRENCY`→DECIMAL(24,4), `YEAR/QUARTER/MONTH/DAY/INTEGER`→BIGINT, `DATE`), exit 0 in ~3.5 s; `auctions` 48 rows with auction_date up to today 2026-10-08 while record_date reads 2026-10-13 (ahead, as planned) and today's auction has null results (the lookback picks them up); `mts_table_1 --since 2026-09-01` returned 0 rows, `total-pages: 0`, but full `dataTypes` (Sept MTS not out yet); an unknown name exits 2 listing the six. A one-off scan of the first 10 000 rows of every dataset from 1990 cast with no failure. Fixtures: 8 real responses (debt_to_penny 2 pages, the other five, MTS empty) recorded with the client's exact URLs; `auctions.json` lost only its unused `meta.labels`/`dataFormats`. No plan contradiction; How › Treasury Fiscal Data gains the client API, the registry YAML shape (endpoints now, pk in S8) and the `fd_probe` raw dataset. |
 | S8 Fiscal Data registry job | done | 2026-10-08 | 0ad6102 | 16 new (test_fiscal_job); suite 173 passed | Live full backfill on `data/usfin.duckdb` (`usfin run fiscal`, from 2000-01-01, 14 pages): `fiscal #7 ok rows 58575` in 19.7 s — `fd_dts_operating_cash` 16 674 (2005-10-03..2026-10-06), `fd_debt_to_penny` 6 718 (2000-01-03..2026-10-06), `fd_auctions` 7 894 (auction_date 2000-01-03..2026-10-08), `fd_avg_interest_rates` 5 025 (2001-01-31..2026-09-30), `fd_mts_table_1` 3 117 (2015-03-31..2026-08-31), `fd_rates_of_exchange` 19 147 (2001-03-31..2026-09-30). Second run `fiscal #8 ok rows 0` in 5.4 s (7 overlap requests). Watermarks: auctions 2026-10-07 (capped: the Mac read 20:52 ET on 10-07 and the feed already lists 2026-10-08 auctions with null results), dts/penny 2026-10-06, avg_rates/rates_of_exchange 2026-09-30, MTS 2026-08-31. `usfin reparse fiscal` replayed 14 raw responses with 0 changes in 1.5 s. After: `data/usfin.duckdb` 13.4 MB, `raw/` 2.4 MB (28 fiscal raw rows, 94 MB of JSON bodies; identical re-fetched pages share blobs). The first live run with per-row bound parameters took 97 s (reparse 72 s); staging through one JSON parameter fixed it and the tables were dropped and re-backfilled with the final code. Plan amended (Jobs: `parsers(settings)`; Treasury Fiscal Data: confirmed pks — `rates_of_exchange` needs `src_line_nbr` because upstream repeats rows —, JSON staging, `on_schema_drift` stub, `then: auction_xcheck` deferred to S14 since chaining a missing job would fail every run). |
 | S9 Alerts | done | 2026-10-08 | 0f65700 | 26 new (test_alerts); suite 199 passed | `usfin run fiscal` on `data/usfin.duckdb` at 21:01 ET on 10-07 printed `fiscal #9 ok rows 0` (5.5 s) and `usfin alerts --all` printed `no alerts` — correct: the day's first fiscal run was S8's backfill (#5, empty `watermark_before`), so no key had a baseline, and no watermark was stale (DTS/penny 10-06 is 1 federal day back, MTS 08-31 has 1 due day since). On a scratch copy of the real DB the rules then fired as designed: a simulated Fri 10-09 run with nothing new raised `zero_new_rows` and `stale_watermark` (3 due days > 2) for `dts_operating_cash` and `debt_to_penny` only; with the baseline a year back, `value_jump` raised 14 (9 rates_of_exchange, 5 mts_table_1, 0 for TGA/penny/avg rates) — among them the 2026-09-30 exchange-rate release, where some rows carry their neighbour's rate (Nepal-Rupee 151.46 → 1.771 ≈ NZD's rate, NZ-Dollar 1.767 → 0.881), an upstream error the rule exists for. No webhook configured, none sent. Plan amended (Alerts): `zero_new_rows` baseline is the watermark before the day's first run — the plan's `watermark_before` fires on every repeat run; first loads skip the baseline rules; `Job.observed`, `schedule.yaml` shape, fiscal due days and thresholds, `series`/`jump_match` in `fiscal_data.yaml` (`src_line_nbr` is no series key: 553 of 681 jumps > 10 % were line shifts); `db_locked` left to S10. |
-| S10 Scheduler and usfin serve | todo | | | | |
+| S10 Scheduler and usfin serve | done | 2026-10-08 | | 23 new (test_scheduler); suite 222 passed | `usfin schedule` printed `fiscal  0 17 * * *  federal` and 10-08, 10-09, 10-13, 10-14, 10-15 17:00 (Columbus Day 10-12 skipped). `usfin serve` on `data/usfin.duckdb` at 21:08 ET on 10-07: `/api/health` `scheduler: running`, no catch-up queued (last ok fiscal run 21:01 ET is after the 17:00 fire — correct). `POST /api/jobs/fiscal/run` answered 202 in 9 ms; the worker ran `fiscal #10 ok (manual) rows 0` in 5 s (6 Fiscal requests), `usfin jobs` showed it with unchanged watermarks; `POST /api/jobs/nope/run` → 404. While serve ran a job, `USFIN_LOCK_WAIT=1 usfin jobs` exited 1 `database busy` (decision A as designed), and printed #11 once it finished. Restarted with `USFIN_LOCK_WAIT=2` and another process holding the DB: run-now logged `job fiscal not run: database busy`, health showed `pending_db_locked: 1`; the next run-now stored alert #1 `fiscal/db_locked/fiscal` (raised_on 2026-10-07, the NY date) before running `#12 ok`; the induced alert was acked. Ctrl-C shut the scheduler and uvicorn down cleanly; no process left, port 8660 free. Plan amended (Scheduler: APScheduler numbers Monday 0 in crontab dow, so named days are required; module API, catch-up rules, skipped row keeps watermark_before; Alerts: how `db_locked` is raised; Tech stack: starlette TestClient `httpx2` warning filtered). |
 | S11 UI shell: jobs and alerts | todo | | | | |
 | S12 TreasuryDirect job | todo | | | | |
 | S13 TreasuryDirect backfill | todo | | | | |

@@ -218,6 +218,8 @@ class RunResult:
     error: str | None = None
     key_errors: dict[str, str] = field(default_factory=dict)
     chained: list["RunResult"] = field(default_factory=list)
+    locked: bool = False
+    """The DB was held by another process past the lock wait: nothing ran, nothing logged."""
 
 
 def _run_key(ctx: JobContext, key: str) -> int:
@@ -374,7 +376,7 @@ def _run_one(
     except store.DatabaseLocked as exc:
         error = f"database busy — another process holds the lock ({exc})"
         log.error("job %s not run: %s", name, error)
-        return RunResult(name, None, "failed", 0, error)
+        return RunResult(name, None, "failed", 0, error, locked=True)
 
 
 # --- reparse ------------------------------------------------------------------------------

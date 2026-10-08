@@ -2,7 +2,9 @@
 # How > Scheduler). Each source slice adds its own job here.
 #
 #   <job>:
-#     cron: "m h dom mon dow"      # America/New_York; read by the scheduler (S10)
+#     cron: "m h dom mon dow"      # America/New_York; read by the scheduler (S10); no cron =
+#                                  # not scheduled. Day of week by name only (mon..sun):
+#                                  # APScheduler 3 numbers Monday 0, cron numbers Sunday 0.
 #     calendar: federal|bond|nyse|any
 #     due: <rule>                  # due days for alert rules: a calendar name, none, or
 #                                  # {calendar: federal, nth_of_month: 8}; default = calendar

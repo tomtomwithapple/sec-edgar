@@ -39,6 +39,10 @@ usfin = "usfin.cli:app"
 testpaths = ["tests"]
 markers = ["live: hits real network endpoints (run with -m live)"]
 addopts = "-m 'not live'"
+# starlette 1.7 (via fastapi 0.142.2) wants `httpx2` for TestClient; the stack pins httpx 0.28.1
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.ruff]
 line-length = 100

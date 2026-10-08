@@ -1,12 +1,14 @@
 import json
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
 import duckdb
 import typer
+import uvicorn
 
-from usfin import __version__, alerts, calendars, jobs, raw, store
+from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 from usfin.sources import fiscal
@@ -127,6 +129,47 @@ def list_jobs() -> None:
                     typer.echo(f"  ! {line}")
         for key, value, updated_at in st.watermarks:
             typer.echo(f"  {key} = {value}  (updated {updated_at:%Y-%m-%d %H:%M:%S}Z)")
+
+
+@app.command("schedule")
+def schedule(
+    at: str | None = typer.Option(
+        None, help="List fires after this time (YYYY-MM-DDTHH:MM, New York); default now."
+    ),
+) -> None:
+    """Print each scheduled job's cron, calendar and next 5 fires on its calendar days (ET)."""
+    if at is None:
+        after = datetime.now(scheduler.ET)
+    else:
+        try:
+            after = datetime.fromisoformat(at)
+        except ValueError:
+            raise typer.BadParameter(f"{at!r} is not an ISO date-time", param_hint="--at") from None
+        if after.tzinfo is None:
+            after = after.replace(tzinfo=scheduler.ET)
+    settings = load_settings()
+    cals = calendars.load_calendars(settings.config_dir)
+    registered = set(jobs.load_registry().names())
+    for name, entry in scheduler.load_schedule(settings.config_dir).items():
+        note = "" if name in registered else "  (not registered)"
+        typer.echo(f"{name}  {entry.cron}  {entry.calendar}{note}")
+        for fire in scheduler.next_fires(entry, cals, after, n=5):
+            typer.echo(f"  {fire.astimezone(scheduler.ET):%Y-%m-%d %H:%M %a}")
+
+
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address (keep it local)."),
+    port: int = typer.Option(8660, help="Port."),
+) -> None:
+    """Run the scheduler (with startup catch-up) and the local web app until stopped."""
+    from usfin.web.app import create_app
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    sched = scheduler.Scheduler(load_settings(), jobs.load_registry())
+    uvicorn.run(create_app(sched), host=host, port=port)
 
 
 db_app = typer.Typer(no_args_is_help=True, help="Database: migrations and info.")
