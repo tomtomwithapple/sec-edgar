@@ -1,19 +1,35 @@
 # Treasury Fiscal Data dataset registry (docs/plans/us-fin-ingest.md, How > Treasury Fiscal Data).
 # Each entry: name (table and raw dataset fd_<name>), endpoint (under
 # https://api.fiscaldata.treasury.gov/services/api/fiscal_service), date_field (default
-# record_date), lookback_days (default 10), backfill_from (default 2000-01-01), and - added by
-# S8 once confirmed against a live response - pk and jump_fields.
+# record_date), lookback_days (default 10), backfill_from (default 2000-01-01), pk (the table's
+# primary key; required by job `fiscal`) and jump_fields (value_jump alert candidates, S9).
+# Every pk was confirmed on 2026-10-08 against the full live history from 2000-01-01: non-null in
+# every row and unique.
 datasets:
   - name: dts_operating_cash
     endpoint: v1/accounting/dts/operating_cash_balance
+    pk: [record_date, account_type]
+    jump_fields: [open_today_bal]
   - name: debt_to_penny
     endpoint: v2/accounting/od/debt_to_penny
+    pk: [record_date]
+    jump_fields: [tot_pub_debt_out_amt]
   - name: auctions
     endpoint: v1/accounting/od/auctions_query
     date_field: auction_date   # record_date is the issue date and runs ahead
+    pk: [cusip, auction_date]
   - name: avg_interest_rates
     endpoint: v2/accounting/od/avg_interest_rates
+    pk: [record_date, security_type_desc, security_desc]
+    jump_fields: [avg_interest_rate_amt]
   - name: mts_table_1
     endpoint: v1/accounting/mts/mts_table_1
+    pk: [record_date, line_code_nbr]   # classification_id is a per-row id, new every month
+    jump_fields: [current_month_dfct_sur_amt]
   - name: rates_of_exchange
+    # upstream repeats some (record_date, country, currency) rows (e.g. 2018-12-31 Czech
+    # Republic-Koruna twice, mid-quarter amendments with another effective_date): only the line
+    # number is unique per release
     endpoint: v1/accounting/od/rates_of_exchange
+    pk: [record_date, src_line_nbr]
+    jump_fields: [exchange_rate]

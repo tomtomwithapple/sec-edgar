@@ -55,13 +55,17 @@ class Job:
     name: str
     keys: Sequence[str] | Callable[["JobContext"], Sequence[str]]
     fetch: Callable[["JobContext", str], Sequence[int]]
-    parsers: Mapping[str, Parser]
+    parsers: Mapping[str, Parser] | Callable[[Settings], Mapping[str, Parser]]
+    """`{raw dataset: parser}`, or `parsers(settings)` building it (config-driven jobs)."""
     then: tuple[str, ...] = ()
     versioned: tuple[str, ...] = ()
     """Tables whose rows carry the `raw_id` they came from; reparse deletes and replays them."""
 
     def key_list(self, ctx: "JobContext") -> list[str]:
         return list(self.keys(ctx) if callable(self.keys) else self.keys)
+
+    def parser_map(self, settings: Settings) -> Mapping[str, Parser]:
+        return self.parsers(settings) if callable(self.parsers) else self.parsers
 
 
 class Registry:
@@ -90,7 +94,7 @@ class Registry:
 REGISTRY = Registry()
 """Process-wide registry; source modules register their jobs here on import."""
 
-SOURCE_MODULES: tuple[str, ...] = ()
+SOURCE_MODULES: tuple[str, ...] = ("usfin.sources.fiscal",)
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
 
@@ -209,12 +213,13 @@ def _run_key(ctx: JobContext, key: str) -> int:
     """Fetch and parse one key; raise on any failure (that key's earlier parses stay)."""
     job, con = ctx.job, ctx.con
     rows = 0
+    parsers = job.parser_map(ctx.settings)
     raw_ids = list(job.fetch(ctx, key))
     for raw_id in raw_ids:
         found = con.execute("SELECT dataset FROM raw_response WHERE id = ?", [raw_id]).fetchone()
         if found is None:
             raise LookupError(f"raw_response {raw_id} does not exist")
-        parser = job.parsers.get(found[0])
+        parser = parsers.get(found[0])
         if parser is None:
             raise LookupError(f"no parser for dataset {found[0]!r} (raw_response {raw_id})")
         con.execute("BEGIN TRANSACTION")
@@ -403,7 +408,8 @@ def reparse(
     their derived rows kept. A parser error rolls the whole reparse back and raises `ReparseFailed`.
     """
     now = now or datetime.now(UTC)
-    datasets = sorted(job.parsers)
+    parsers = job.parser_map(settings)
+    datasets = sorted(parsers)
     if not datasets:
         return ReparseResult(job.name, [], [], 0, 0)
     sql = (
@@ -444,7 +450,7 @@ def reparse(
                 ).fetchone()[0]
         for raw_id, dataset in todo:
             try:
-                rows += int(job.parsers[dataset](ctx, raw_id) or 0)
+                rows += int(parsers[dataset](ctx, raw_id) or 0)
             except Exception as exc:
                 raise ReparseFailed(
                     f"raw_response {raw_id} ({dataset}): {type(exc).__name__}: {exc}"

@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S7 done — next: S8
+Status: S8 done — next: S9
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -358,6 +358,9 @@ nothing, a failed child does not stop its siblings, a job runs at most once per 
 stop), an unknown name becomes a `failed` result with no run id. `RunResult.chained` holds the
 children; `usfin run` prints them indented with `(chained)` and exits 1 if any run failed;
 `run_job(chain=False)` runs the job alone.
+*(Amended in S8.)* `Job.parsers` may also be `parsers(settings) -> {dataset: parse}` for
+config-driven jobs (Fiscal's raw datasets come from `fiscal_data.yaml`); the runner and reparse
+call `job.parser_map(settings)`. `SOURCE_MODULES` starts with `usfin.sources.fiscal`.
 
 **Job names (complete list).** `fiscal`, `auction_xcheck`, `treasurydirect`, `bls`,
 `bls_calendar`, `edgar_tickers`, `edgar_feed`, `edgar_submissions`, `edgar_companyfacts`,
@@ -405,6 +408,30 @@ PERCENTAGE, QUARTER, STRING, YEAR`; some auction columns typed `STRING` upstream
 (`price_per100`, `high_price`) and stay VARCHAR. `usfin fd probe <name> [--since]` fetches and
 prints rows, columns and types; it archives as raw dataset `fd_probe`, so `reparse fiscal` never
 replays probes.
+*(Amended in S8.)* Registry pks, each confirmed on 2026-10-08 against the full live history from
+2000-01-01 (non-null in every row, unique): `dts_operating_cash` (record_date, account_type),
+`debt_to_penny` (record_date), `auctions` (cusip, auction_date), `avg_interest_rates`
+(record_date, security_type_desc, security_desc), `mts_table_1` (record_date, line_code_nbr —
+`classification_id` is a per-row id, new every month), `rates_of_exchange` (record_date,
+src_line_nbr): upstream repeats some (record_date, country, currency) rows (e.g. 2018-12-31 Czech
+Republic-Koruna twice; mid-quarter amendments with another `effective_date`), so only the line
+number is unique per release. `jump_fields` are set for S9 (none for `auctions`). Job `fiscal`
+lives in `sources/fiscal.py` (`fiscal.JOB`): parsers read each page back from the raw store,
+`upsert_page` creates `fd_<name>` from the page's `dataTypes` with the registry pk (an empty page
+creates it too; a missing pk is a `ConfigError` for that key, a duplicate pk within a page fails
+the key), adds unseen columns with `ALTER TABLE ADD COLUMN` and calls
+`fiscal.on_schema_drift(ctx, name, {column: dataType})` — a logging stub S9 points at the
+`schema_drift` alert. A column absent from a later response keeps its stored values (only the
+response's columns are updated). Rows are staged and upserted on pk only when new or changed
+(`IS NOT DISTINCT FROM` on every column), so `rows_upserted` counts changes and a repeat run
+reports 0. Staging passes the cast rows as **one JSON text parameter** (`json_transform`), not
+bound row values: DuckDB 1.5.6 binds large parameter lists at ~30 µs a value (30 s for one
+10 000-row auctions page) — that took the live backfill from 97 s to 20 s and a full reparse from
+72 s to 1.5 s. The key's watermark is the newest `date_field` value parsed; a response with no
+rows leaves it unset. `then: [auction_xcheck]` is **not** set yet: chaining a job that does not
+exist would fail every run, so S14 adds it with the job. `auctions_query` already carries
+announced auctions dated after today (null results); the cap keeps the watermark at today and
+the lookback refetches them.
 
 **TreasuryDirect.** Base `https://www.treasurydirect.gov/TA_WS/securities/`. Job
 `treasurydirect` (raw datasets `td_announced`, `td_auctioned`, `td_search`):
@@ -915,7 +942,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S5 Job runner, run log, watermarks | done | 2026-10-08 | e92cd24 | 19 new (test_jobs); suite 107 passed | On the real store, `USFIN_DEMO=1 usfin run _demo` printed `_demo #1 ok rows 6` and `usfin jobs` listed run #1 and `alpha`/`beta` = 2026-10-07 — the Mac clock read 2026-10-08 00:22 UTC, i.e. 20:22 ET on the 7th, so the ET-date cap held. With `USFIN_DEMO_FAIL=beta`: `#2 failed rows 3`, exit 1, error `beta: RuntimeError: …`; a later failing run moved `alpha`'s `updated_at` but left `beta`'s from the run before (C7). Four runs left 6 `demo_item` rows (upserts) and 8 `raw_response` rows over 2 blobs. With another python process holding `data/usfin.duckdb`, `USFIN_LOCK_WAIT=1 usfin run _demo` exited 1 after ~1.3 s with `database busy — …`, `(not logged)`, and no new `job_run` or watermark change. Without `USFIN_DEMO`, `usfin run _demo` exits 2 `unknown job`. Plan amended (Jobs): fetch is `fetch(ctx, key)` per watermark key (a per-job `fetch(ctx)` could not fail one key alone), `ctx.advance`, ET today, lock → no run row, `load_registry`/`_demo`. |
 | S6 Reparse and chaining | done | 2026-10-08 | af1bf5d | 19 new (test_reparse); suite 126 passed | On the real store (8 `_demo` raw rows from S5), `USFIN_DEMO=1 usfin reparse _demo` printed `_demo reparsed 8 raw responses, rows 24`, exit 0; `raw_response` (10), `job_run` (4), both watermarks and their `updated_at` unchanged, `demo_item` identical. After `DELETE FROM demo_item` the same command rebuilt all 6 rows. `--since 2026-10-08` reparsed 0 and `--since 2026-10-07` all 8: the blobs were fetched 2026-10-08 00:22 UTC = 10-07 ET, so `--since` reasons in New York dates. With another process holding the DB, `USFIN_LOCK_WAIT=1 usfin reparse _demo` exited 1 after ~1 s with `database busy — …`. Plan amended (Jobs): `Job.versioned` tables, one-transaction all-or-nothing reparse with `ReparseFailed`, `NetworkDisabled` transport, no `job_run` and no watermark move on reparse, pruned rows keep their derived history, depth-first chain run once per chain, failed child does not stop siblings, `usfin run` exits 1 if a chained run failed. |
 | S7 Fiscal Data client | done | 2026-10-08 | 8981c36 | 31 new (test_fiscal_client); suite 157 passed | `usfin fd probe debt_to_penny --since 2026-09-01` (live) printed 25 rows in 1 page, record_date 2026-09-01 .. 2026-10-06, 11 columns (`CURRENCY`→DECIMAL(24,4), `YEAR/QUARTER/MONTH/DAY/INTEGER`→BIGINT, `DATE`), exit 0 in ~3.5 s; `auctions` 48 rows with auction_date up to today 2026-10-08 while record_date reads 2026-10-13 (ahead, as planned) and today's auction has null results (the lookback picks them up); `mts_table_1 --since 2026-09-01` returned 0 rows, `total-pages: 0`, but full `dataTypes` (Sept MTS not out yet); an unknown name exits 2 listing the six. A one-off scan of the first 10 000 rows of every dataset from 1990 cast with no failure. Fixtures: 8 real responses (debt_to_penny 2 pages, the other five, MTS empty) recorded with the client's exact URLs; `auctions.json` lost only its unused `meta.labels`/`dataFormats`. No plan contradiction; How › Treasury Fiscal Data gains the client API, the registry YAML shape (endpoints now, pk in S8) and the `fd_probe` raw dataset. |
-| S8 Fiscal Data registry job | todo | | | | |
+| S8 Fiscal Data registry job | done | 2026-10-08 | | 16 new (test_fiscal_job); suite 173 passed | Live full backfill on `data/usfin.duckdb` (`usfin run fiscal`, from 2000-01-01, 14 pages): `fiscal #7 ok rows 58575` in 19.7 s — `fd_dts_operating_cash` 16 674 (2005-10-03..2026-10-06), `fd_debt_to_penny` 6 718 (2000-01-03..2026-10-06), `fd_auctions` 7 894 (auction_date 2000-01-03..2026-10-08), `fd_avg_interest_rates` 5 025 (2001-01-31..2026-09-30), `fd_mts_table_1` 3 117 (2015-03-31..2026-08-31), `fd_rates_of_exchange` 19 147 (2001-03-31..2026-09-30). Second run `fiscal #8 ok rows 0` in 5.4 s (7 overlap requests). Watermarks: auctions 2026-10-07 (capped: the Mac read 20:52 ET on 10-07 and the feed already lists 2026-10-08 auctions with null results), dts/penny 2026-10-06, avg_rates/rates_of_exchange 2026-09-30, MTS 2026-08-31. `usfin reparse fiscal` replayed 14 raw responses with 0 changes in 1.5 s. After: `data/usfin.duckdb` 13.4 MB, `raw/` 2.4 MB (28 fiscal raw rows, 94 MB of JSON bodies; identical re-fetched pages share blobs). The first live run with per-row bound parameters took 97 s (reparse 72 s); staging through one JSON parameter fixed it and the tables were dropped and re-backfilled with the final code. Plan amended (Jobs: `parsers(settings)`; Treasury Fiscal Data: confirmed pks — `rates_of_exchange` needs `src_line_nbr` because upstream repeats rows —, JSON staging, `on_schema_drift` stub, `then: auction_xcheck` deferred to S14 since chaining a missing job would fail every run). |
 | S9 Alerts | todo | | | | |
 | S10 Scheduler and usfin serve | todo | | | | |
 | S11 UI shell: jobs and alerts | todo | | | | |
