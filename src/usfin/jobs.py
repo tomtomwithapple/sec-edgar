@@ -9,6 +9,9 @@ recorded and the next key runs; the run closes `ok`, or `failed` with every key'
 Watermark dates are capped at today (America/New_York). The runner never consults a calendar:
 manual runs ignore it and the scheduler guards scheduled ones.
 
+A derived job (`compute`, e.g. `auction_xcheck`) reads tables other jobs filled instead of
+fetching: its `compute(ctx, key)` runs per key in its own transaction and returns rows changed.
+
 After an `ok` run, each job in `then` runs in turn (its own `job_run`, trigger `chained`, and
 its own chain); a failed run chains nothing, and a job runs at most once per chain.
 After every recorded run (ok or failed) the job's alert rules run (`usfin.alerts`) and new
@@ -66,6 +69,9 @@ class Job:
         Mapping[str, alerts.Observed] | Callable[[Settings], Mapping[str, alerts.Observed]] | None
     ) = None
     """`{key: Observed}` (or built from settings): where each key's rows live, for alert rules."""
+    compute: Callable[["JobContext", str], int] | None = None
+    """A derived job (no source of its own): `compute(ctx, key) -> rows` runs after the key's
+    fetch and parses, in its own transaction, and reads tables other jobs filled."""
 
     def key_list(self, ctx: "JobContext") -> list[str]:
         return list(self.keys(ctx) if callable(self.keys) else self.keys)
@@ -105,7 +111,11 @@ class Registry:
 REGISTRY = Registry()
 """Process-wide registry; source modules register their jobs here on import."""
 
-SOURCE_MODULES: tuple[str, ...] = ("usfin.sources.fiscal", "usfin.sources.treasurydirect")
+SOURCE_MODULES: tuple[str, ...] = (
+    "usfin.sources.fiscal",
+    "usfin.sources.treasurydirect",
+    "usfin.sources.auction_xcheck",
+)
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
 
@@ -238,6 +248,14 @@ def _run_key(ctx: JobContext, key: str) -> int:
         con.execute("BEGIN TRANSACTION")
         try:
             rows += int(parser(ctx, raw_id) or 0)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+    if job.compute is not None:
+        con.execute("BEGIN TRANSACTION")
+        try:
+            rows += int(job.compute(ctx, key) or 0)
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")

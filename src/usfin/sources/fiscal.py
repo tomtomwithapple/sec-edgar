@@ -370,6 +370,13 @@ def _observed(settings: Settings) -> dict[str, alerts.Observed]:
 
 
 JOB = jobs.REGISTRY.register(
-    jobs.Job(name="fiscal", keys=_keys, fetch=_fetch, parsers=_parsers, observed=_observed)
+    jobs.Job(
+        name="fiscal",
+        keys=_keys,
+        fetch=_fetch,
+        parsers=_parsers,
+        observed=_observed,
+        then=("auction_xcheck",),
+    )
 )
-"""Every registry entry, one watermark key each. S14 adds `then: (auction_xcheck,)`."""
+"""Every registry entry, one watermark key each; `auction_xcheck` runs after an ok run."""

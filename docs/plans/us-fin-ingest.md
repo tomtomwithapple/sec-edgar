@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S13 done — next: S14
+Status: S14 done — next: S15
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -364,6 +364,10 @@ children; `usfin run` prints them indented with `(chained)` and exits 1 if any r
 *(Amended in S8.)* `Job.parsers` may also be `parsers(settings) -> {dataset: parse}` for
 config-driven jobs (Fiscal's raw datasets come from `fiscal_data.yaml`); the runner and reparse
 call `job.parser_map(settings)`. `SOURCE_MODULES` starts with `usfin.sources.fiscal`.
+*(Amended in S14.)* A derived job — one that reads tables other jobs filled and has no source of
+its own (`auction_xcheck`) — sets `Job(…, compute=fn)`: `fn(ctx, key) -> rows` runs after the
+key's fetch and parses, in its own transaction, and its rows count toward `rows_upserted`; such a
+job has `fetch` returning `[]` and `parsers={}`, so reparse has nothing to replay for it.
 
 **Job names (complete list).** `fiscal`, `auction_xcheck`, `treasurydirect`, `bls`,
 `bls_calendar`, `edgar_tickers`, `edgar_feed`, `edgar_submissions`, `edgar_companyfacts`,
@@ -468,8 +472,8 @@ reports 0. Staging passes the cast rows as **one JSON text parameter** (`json_tr
 bound row values: DuckDB 1.5.6 binds large parameter lists at ~30 µs a value (30 s for one
 10 000-row auctions page) — that took the live backfill from 97 s to 20 s and a full reparse from
 72 s to 1.5 s. The key's watermark is the newest `date_field` value parsed; a response with no
-rows leaves it unset. `then: [auction_xcheck]` is **not** set yet: chaining a job that does not
-exist would fail every run, so S14 adds it with the job. `auctions_query` already carries
+rows leaves it unset. `then: [auction_xcheck]` was left unset in S8 (chaining a job that does not
+exist would fail every run) and set in S14 with the job. `auctions_query` already carries
 announced auctions dated after today (null results); the cap keeps the watermark at today and
 the lookback refetches them.
 
@@ -523,6 +527,28 @@ ended. A parse error after a successful fetch leaves that month counted as fetch
 and `usfin reparse treasurydirect`. The host gets the default 4 rps bucket (`hosts.yaml`).
 Job `auction_xcheck` compares `fd_auctions` to `tsy_security` on (cusip, auction_date) for high
 yield/rate and offering amount; each mismatch raises one `auction_mismatch` alert (C15).
+*(Amended in S14.)* Comparison rules, set against the full history in `data/usfin.duckdb` on
+2026-10-08 (7 894 Fiscal Data auctions 2000-01-03..2026-10-08, every one also in `tsy_security`,
+none the other way round inside that range): the key must include `auction_date` — 2 214 CUSIPs
+were auctioned more than once (reopenings). Like is compared with like, no unit conversion: both
+sources store rates in percent and amounts in dollars; a bill has a discount and an investment
+rate and no yield, an FRN only a discount margin (`high_discnt_margin` ↔ `high_discount_margin`),
+notes/bonds/TIPS a yield. The fields are `offering_amt` (exact, both DECIMAL), `high_yield`,
+`high_discount_rate`, `high_investment_rate`, `high_discount_margin` (rounded to 6 decimals:
+upstream writes "5.3000" vs "5.300000"; results are published to 3 decimals). A field set on one
+side only is **`pending`**, not a mismatch (Fiscal Data may publish a result after TreasuryDirect
+has it, and the job runs at 17:00 after TreasuryDirect's 14:00); rows on one side only are
+`fd_only` / `td_only`, counted within the two tables' overlap (auction dates from the later of
+their earliest dates — TreasuryDirect reaches 1979, the Fiscal Data registry 2000). A pair with
+any disagreeing field raises one `auction_mismatch` per New York day (subject
+`<cusip>@<auction_date>`, detail `{cusip, auction_date, security_type, security_term, fields:
+{field: {fiscal, treasurydirect}}}`); a disagreement that persists raises again the next day.
+Every compared pair is kept in table `auction_xcheck(cusip, auction_date, result
+matched|mismatch|pending|fd_only|td_only, security_type, diff JSON)` (migration
+`003_auction_xcheck.sql`), changed only when a verdict or diff changes, so `rows_upserted` is the
+number of pairs whose verdict changed and the counts are `SELECT result, count(*) FROM
+auction_xcheck GROUP BY result`. The job has one key (`auctions`), no watermark, no cron (it runs
+chained after `fiscal`) and no `schedule.yaml` rules. Module `usfin.sources.auction_xcheck`.
 
 **BLS (C4).** `config/bls.yaml`: series ID, FRED ID, jump threshold:
 `CUSR0000SA0`→`CPIAUCSL`, `CUSR0000SA0L1E`→`CPILFESL`, `WPSFD4`→`PPIFIS`,
@@ -1059,7 +1085,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S11 UI shell: jobs and alerts | done | 2026-10-08 | a999ead | 12 new (test_web_jobs); suite 234 passed | `usfin serve` on `data/usfin.duckdb` (Mac clock 21:13 ET on 10-07): `/` listed `fiscal` (`0 17 * * *` federal, next 2026-10-08 17:00 EDT, #12 ok manual, six watermarks) and `_demo` (not registered without `USFIN_DEMO`, shown from the run log with its #4 failed error); `/?format=csv` gave the same two rows; `/alerts` said `no open alerts`, `/alerts?format=csv&all=1` returned `alerts_all.csv` with S10's acked `db_locked` alert #1 (detail JSON, `acknowledged_at`); `/static/style.css` 200 `text/css`. `curl -XPOST -H 'Accept: text/html' /api/jobs/fiscal/run` answered 303 → `/` in 2 ms and the worker ran `fiscal #13 ok (manual) rows 0` in 4 s. With another process holding the DB, `/` waited the 5 s UI lock wait and rendered the 503 busy page (DuckDB's lock message under Details); a CSV request started 7 s into a 12 s hold got 200 once the holder let go inside its wait; `/` answered 200 after release. SIGINT shut the scheduler and uvicorn down; no process left, port 8660 free. Wheel and sdist carry `web/templates/*.html` and `web/static/style.css`. Plan amended (Web UI): form posts get 303 back by `Accept` negotiation (a JSON 202 strands a browser and POST bodies are out), the `usfin.web.tables` helper, `ui_wait`, busy responses, `?all=1`. |
 | S12 TreasuryDirect job | done | 2026-10-08 | bd72e5e | 17 new (test_treasurydirect); suite 251 passed (test_store's `version: 1` now reads the latest migration) | `usfin run treasurydirect` on `data/usfin.duckdb` (Mac clock 21:21 ET on 10-07): `treasurydirect #14 ok rows 250` in 5.4 s — 2 requests (`announced` 885 KB, `auctioned&days=7` 32 KB), migration 002 applied; `tsy_security` 247 `auctioned` (auction_date 2026-03-17..2026-10-07) + 3 `announced` (the 2026-10-08 4-/8-week bills and the 30-year bond reopening); watermarks `announced` and `results` both 2026-10-07 (the 10-08 auctions capped at the ET date); no alerts. Second run `#15 ok rows 0` in 5.4 s, table unchanged. Live probes for the fixtures: camelCase `search` 2010-03-01..03-10 gave 11 records (39 KB), lowercase names gave the whole history (37.6 MB, 11 143 records, earliest auction 1979-10-31 — S13 still probes the earliest window). Plan amended (TreasuryDirect): no old/new field names exist (one 120-key shape since 1979), FRN results live only in `highDiscountMargin` so the status rule and a `high_discount_margin` column include it, `announced` carries full results today, keys `announced`/`results`, drift once per new key, alert rules. |
 | S13 TreasuryDirect backfill | done | 2026-10-08 | ea07743 | 10 new (test_td_backfill); suite 261 passed | Probe: `search` 1900-01-01..1979-10-30 → `[]`, ..1980-12-31 → 171 records from **1979-10-31** (recorded in How › TreasuryDirect). `usfin td backfill --from 1979-10-31` on `data/usfin.duckdb` (Mac clock 20:26 ET on 10-07, so today = 10-07): 565 monthly windows, 565 requests, 11 140 records, 10 893 rows new (the other 247 were S12's, unchanged) in 210 s (~2.7 req/s under the 4 rps bucket). `tsy_security` now 11 143 rows (11 139 `auctioned` 1979-10-31..2026-10-07, 4 `announced`: the three 2026-10-08 auctions and the 2001-09-11 4-week bill that never got results) — 8 352 bills, 2 337 notes, 454 bonds; the same 11 143 records S12's lowercase `search` returned; no alerts, watermarks unchanged (`results` 2026-10-07). Re-run: 1 request (the open October window), 564 skipped, rows 0 in 3.3 s. `usfin reparse treasurydirect` replayed 570 raw responses with rows 0 (table hash unchanged) in 3.4 s; on a scratch copy with `tsy_security` emptied it rebuilt all 11 143 rows to the identical hash in 4.8 s. After: `data/usfin.duckdb` 16.0 → 43.3 MB (the JSON payloads), `raw/` 2.5 → 5.8 MB (566 `td_search` bodies, 37.6 MB uncompressed, 3.4 MB of gzip blobs under `raw/treasurydirect`). Plan held; How › TreasuryDirect gained the earliest date and the backfill's dataset, resume and watermark rules (no `job_run` for the CLI load). |
-| S14 Auction cross-check | todo | | | | |
+| S14 Auction cross-check | done | 2026-10-08 | | 14 new (test_auction_xcheck); suite 275 passed | Before defining a mismatch, the real data: `fd_auctions` 7 894 rows (2000-01-03..2026-10-08) join `tsy_security` 1:1 on (cusip, auction_date), 0 one-sided either way in the overlap; every one of the five fields agrees on every pair (nulls included — the 3 2026-10-08 auctions and the 2001-09-11 bill have no results on either side); FD writes rates "3.735000", TD "5.3000"; 2 214 CUSIPs are reopened, so the CUSIP alone is no key. `usfin run fiscal` on `data/usfin.duckdb` (Mac clock 21:35 ET on 10-07): `fiscal #16 ok rows 0` then `auction_xcheck #17 ok rows 7894 (chained)` in 0.09 s, migration 003 applied; `auction_xcheck` = **7 894 matched, 0 mismatch, 0 pending, 0 fd_only, 0 td_only**; `usfin alerts` showed no `auction_mismatch` (live mismatch count 0). `usfin run auction_xcheck` again: `#18 ok rows 0`. On a scratch copy with a TD yield set to 5.31 (91282CRF0 10-07), an FD offering +1 bn (FRN reopening 91282CRD5 09-23), one bill's FD rates nulled and one bill CUSIP's 3 FD auctions deleted: `rows 6`, exactly 2 `auction_mismatch` alerts (one per pair, the right fields), 1 pending, 3 td_only, 7 888 matched; a second run raised no more and changed 0 rows. Plan amended: Jobs gains `Job.compute` for derived jobs (a no-source job has no raw responses for parsers, so the runner needed a hook); How › TreasuryDirect gains the comparison rules (pending for one-sided fields, overlap for one-sided rows, 6-decimal rate rounding, re-alert per day) and table `auction_xcheck`; Fiscal Data's `then: [auction_xcheck]` is now set. |
 | S15 BLS client and series config | todo | | | | |
 | S16 BLS versioned observations | todo | | | | |
 | S17 BLS release calendar and retry | todo | | | | |
