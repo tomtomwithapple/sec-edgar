@@ -812,7 +812,7 @@ Done when: C18 covered; every job has at least one ok live run.
 
 | Slice | Status | Date | Commit | Tests | Run showed |
 |-------|--------|------|--------|-------|------------|
-| S0 Scaffold | done | 2026-10-08 | | 10 new (test_cli 2, test_settings 8); suite 10 passed | `uv sync` resolved 43 packages on CPython 3.13.14; `usfin version` printed `0.1.0`; uv.lock pins all 14 Tech stack versions exactly (deps pinned with `==` in pyproject); `uv build` made sdist + wheel. Real env wins over `.env`; `.env` is read without mutating `os.environ`; bad `USFIN_LOCK_WAIT` → `ConfigError`. No plan change. |
+| S0 Scaffold | done | 2026-10-08 | 70b5a87 | 10 new (test_cli 2, test_settings 8); suite 10 passed | `uv sync` resolved 43 packages on CPython 3.13.14; `usfin version` printed `0.1.0`; uv.lock pins all 14 Tech stack versions exactly (deps pinned with `==` in pyproject); `uv build` made sdist + wheel. Real env wins over `.env`; `.env` is read without mutating `os.environ`; bad `USFIN_LOCK_WAIT` → `ConfigError`. No plan change. |
 | S1 Store, migrations, lock wait | todo | | | | |
 | S2 Raw store | todo | | | | |
 | S3 Rate limiter and HTTP client | todo | | | | |
