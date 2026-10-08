@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S3 done — next: S4
+Status: S4 done — next: S5
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -298,6 +298,17 @@ the limiters `ratelimit.LIMITERS`. `usfin http get URL [--source] [--dataset]` i
 `is_bond_day(d)`: federal day and not Good Friday; `is_nyse_day(d)`: weekday, not in
 `holidays.NYSE()`. All apply `config/calendars.yaml` overrides (`<calendar>: {closed: […], open:
 […]}`) for SIFMA/NYSE one-offs. `prev_day/next_day(calendar, d)` and `days_back(calendar, d, n)`.
+*(Amended after S4.)* The functions are methods of a `Calendars` object built by
+`calendars.load_calendars(config_dir)` (the overrides travel with it): `is_federal_day`,
+`is_bond_day`, `is_nyse_day`, `is_day(calendar, d)` with calendar `federal|bond|nyse|any` (`any` =
+every day, no overrides), `prev_day`/`next_day` strictly before/after `d`, `days_back(cal, d, 0)`
+= `d`. Good Friday is computed (Gregorian Easter − 2), not looked up. A `federal` override moves
+`bond` too (bond = federal minus Good Friday); a `bond` override wins over both. Bad override
+files (unknown calendar or key, non-date, a date both closed and open) are `ConfigError`.
+`holidays.NYSE()` already carries NYSE days of mourning (2018-12-05, 2025-01-09) but
+`holidays.US` carries no one-off executive-order federal closures (2025-01-09) — those go in
+`calendars.yaml` by hand. `usfin calendar YYYY-MM-DD` prints the holiday names and the three
+verdicts.
 
 **Jobs (C2, C3, C7).** A job is registered in `jobs.REGISTRY` by name with:
 `fetch(ctx) -> list[raw_id]`, `parsers: {dataset: parse(ctx, raw_id) -> rows}`, watermark keys,
@@ -834,7 +845,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S1 Store, migrations, lock wait | done | 2026-10-08 | 352a7c4 | 12 new (test_store); suite 22 passed | `db migrate` on a fresh `data/usfin.duckdb` printed `applied 001_core`, re-run `schema up to date`; `db info` printed path, `version: 1`, tables `alert, job_run, raw_response, schema_version, watermark`. With a second python process holding the real file, `USFIN_LOCK_WAIT=1 usfin db info` exited 1 after ~1 s with `database busy — …` (DuckDB `IOException` "Could not set lock on file … Conflicting lock is held in … (PID n)"); after release it opened clean. Each migration runs in its own transaction (a broken one rolls back fully). Plan amended (Core tables): `job_run.status` gains `running`; ids from sequences. |
 | S2 Raw store | done | 2026-10-08 | d5475d2 | 14 new (test_raw); suite 36 passed | `usfin raw prune --dry-run` on the real (empty) store printed `dry run: 0 candidates, 0 blobs, 0 bytes`, exit 0; `db info` unchanged (version 1). Every body (bytes, stream or chunk iterable) is spooled to a temp file in `CHUNK_SIZE` reads while hashing, then gzipped or renamed to `.zip` — never read whole, no temp left behind. Prune ranks distinct blobs per dataset by latest fetch (an unchanged ZIP fetched twice is one blob), marks rows in one transaction, deletes blobs only no unpruned row still uses. Plan amended (Raw store): `raw.open(con, raw_id)` takes the session; blob-vs-row ranking stated. |
 | S3 Rate limiter and HTTP client | done | 2026-10-08 | c6cfb02 | 27 new (test_ratelimit 9, test_http 18); suite 63 passed | `usfin http get …/debt_to_penny?page%5Bsize%5D=1` (live, keyless) printed `status: 200`, `raw_id: 1`, `bytes: 1765`, exit 0; the `raw_response` row has source `manual`, dataset `http_get`, the encoded URL, `application/json`, a request sha, and `raw.open` returns the JSON (decoded: httpx un-gzips before archiving). A second run made raw_id 2 in ~1.4 s. Unsorted, Fiscal Data returns the oldest record first (1993-04-01) — S7 must send `sort=`. No SEC request sent (SEC tested with respx only). Plan amended (HTTP): `Client(con, …)`, capacity-1 bucket, `hosts.yaml` shape, SEC hosts decided by code, only the final attempt archived, error/`SecBlocked` carry `raw_id`. |
-| S4 Calendars | todo | | | | |
+| S4 Calendars | done | 2026-10-08 | | 25 new (test_calendars); suite 88 passed | `usfin calendar 2026-10-12` printed `Mon (Columbus Day)` federal closed, bond closed, nyse open; `… 2026-04-03` `Fri (Good Friday)` federal open, bond closed, nyse closed; `… 2026-11-11` Veterans Day federal/bond closed, nyse open; a bad date exits 2. `holidays.NYSE()` already has the 2018/2025 mourning closures, `holidays.US` has no executive-order federal closures (2025-01-09) — overrides file is where those go. Plan amended (Calendars): `Calendars` object from `load_calendars`, `any` calendar, override precedence (federal moves bond, bond wins), strict prev/next, computed Good Friday, `usfin calendar`. |
 | S5 Job runner, run log, watermarks | todo | | | | |
 | S6 Reparse and chaining | todo | | | | |
 | S7 Fiscal Data client | todo | | | | |

@@ -1,10 +1,11 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 
 import duckdb
 import typer
 
-from usfin import __version__, raw, store
+from usfin import __version__, calendars, raw, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 
@@ -20,6 +21,20 @@ def main() -> None:
 def version() -> None:
     """Print the package version."""
     typer.echo(__version__)
+
+
+@app.command("calendar")
+def calendar(day: str = typer.Argument(..., help="Date as YYYY-MM-DD.")) -> None:
+    """Print whether DAY is a federal, bond and NYSE business day."""
+    try:
+        d = date.fromisoformat(day)
+    except ValueError:
+        raise typer.BadParameter(f"{day!r} is not a YYYY-MM-DD date", param_hint="DAY") from None
+    cals = calendars.load_calendars(load_settings().config_dir)
+    names = cals.holiday_names(d)
+    typer.echo(f"{d:%Y-%m-%d %a}" + (f" ({'; '.join(names)})" if names else ""))
+    for name in ("federal", "bond", "nyse"):
+        typer.echo(f"{name}: {'open' if cals.is_day(name, d) else 'closed'}")
 
 
 db_app = typer.Typer(no_args_is_help=True, help="Database: migrations and info.")

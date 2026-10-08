@@ -1,1 +1,12 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# Manual one-off overrides on top of the holiday rules in src/usfin/calendars.py:
+#   federal: weekday, not a US federal holiday (holidays.US, observed)
+#   bond:    federal day, not Good Friday (a federal override moves bond too)
+#   nyse:    weekday, not an NYSE holiday (holidays.NYSE)
+# holidays.NYSE already carries NYSE days of mourning (2018-12-05, 2025-01-09); holidays.US does
+# NOT carry one-off executive-order federal closures (e.g. 2025-01-09), so add those here when
+# one is announced. Dates are YYYY-MM-DD; each calendar takes `closed` and/or `open` lists:
+#
+# federal:
+#   closed: [2025-01-09]
+# bond:
+#   open: []
