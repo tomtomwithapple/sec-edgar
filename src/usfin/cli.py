@@ -5,7 +5,7 @@ from datetime import date
 import duckdb
 import typer
 
-from usfin import __version__, calendars, raw, store
+from usfin import __version__, calendars, jobs, raw, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 
@@ -35,6 +35,47 @@ def calendar(day: str = typer.Argument(..., help="Date as YYYY-MM-DD.")) -> None
     typer.echo(f"{d:%Y-%m-%d %a}" + (f" ({'; '.join(names)})" if names else ""))
     for name in ("federal", "bond", "nyse"):
         typer.echo(f"{name}: {'open' if cals.is_day(name, d) else 'closed'}")
+
+
+@app.command("run")
+def run(job: str = typer.Argument(..., help="Registered job name.")) -> None:
+    """Run JOB now in this process (manual trigger; the calendar is not consulted)."""
+    registry = jobs.load_registry()
+    try:
+        registry.get(job)
+    except jobs.UnknownJob as exc:
+        known = ", ".join(registry.names()) or "none registered"
+        raise typer.BadParameter(f"{exc} (known: {known})", param_hint="JOB") from None
+    result = jobs.run_job(job, registry=registry)
+    run_id = f"#{result.run_id}" if result.run_id is not None else "(not logged)"
+    typer.echo(f"{job} {run_id} {result.status} rows {result.rows_upserted}")
+    if result.status != "ok":
+        typer.echo(f"error: {result.error}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("jobs")
+def list_jobs() -> None:
+    """List every job with its last run and watermarks."""
+    names = jobs.load_registry().names()
+    with _db_session(apply_migrations=True) as con:
+        statuses = jobs.status(con, names)
+    for st in statuses:
+        last = st.last_run
+        if last is None:
+            typer.echo(f"{st.job}\tnever run")
+        else:
+            finished = f"{last['finished_at']:%Y-%m-%d %H:%M:%S}" if last["finished_at"] else "-"
+            typer.echo(
+                f"{st.job}\t#{last['id']} {last['status']} ({last['trigger']})"
+                f" started {last['started_at']:%Y-%m-%d %H:%M:%S}Z finished {finished}Z"
+                f" rows {last['rows_upserted']}"
+            )
+            if last["error"]:
+                for line in last["error"].splitlines():
+                    typer.echo(f"  ! {line}")
+        for key, value, updated_at in st.watermarks:
+            typer.echo(f"  {key} = {value}  (updated {updated_at:%Y-%m-%d %H:%M:%S}Z)")
 
 
 db_app = typer.Typer(no_args_is_help=True, help="Database: migrations and info.")

@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S4 done — next: S5
+Status: S5 done — next: S6
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -323,6 +323,20 @@ parser map, in `fetched_at` order, and calls the parsers with HTTP disabled (a t
 transport that fails on any request). Versioned jobs (BLS) first delete the rows derived from
 the selected raw responses (`raw_id`) and replay in order, so history is rebuilt, not appended.
 Commands: `usfin run <job>`, `usfin jobs` (last run + watermarks per job), `usfin reparse`.
+*(Amended in S5.)* Fetch is per key, not per job: a `jobs.Job(name, keys, fetch, parsers,
+then=())` has `keys` (a list, or `keys(ctx)` for config-driven ones such as Fiscal registry names)
+and `fetch(ctx, key) -> [raw_id]`; that is what lets one key fail while the others commit. A
+parser returns its row count and proposes the key's new watermark with `ctx.advance(key, value)`
+(dates and ISO date strings capped at `ctx.today`, the America/New_York date; datetimes stored as
+naive-UTC ISO; anything else verbatim); the runner writes it only after every raw response of that
+key parsed. A raw response whose dataset has no parser fails its key. `ctx` also carries `con`,
+`settings`, `now`, `trigger`, `run_id`, `watermarks` (as loaded at start) and a lazy `ctx.client`
+(`http.Client` on the run's session; `run_job(transport=)` injects a transport). One session spans
+the run, so a DB held past the lock wait means no `job_run` row: `run_job` logs it and returns a
+`failed` result with no run id (CLI exit 1), watermarks untouched. `jobs.load_registry()` imports
+`SOURCE_MODULES` (each source slice adds its module) and adds the no-network `_demo` job (module
+`usfin.demo`, keys `alpha`, `beta`; `USFIN_DEMO_FAIL=<key>` fails that key) only when
+`USFIN_DEMO=1`. The runner never consults a calendar (scheduler guard is S10).
 
 **Job names (complete list).** `fiscal`, `auction_xcheck`, `treasurydirect`, `bls`,
 `bls_calendar`, `edgar_tickers`, `edgar_feed`, `edgar_submissions`, `edgar_companyfacts`,
@@ -846,7 +860,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S2 Raw store | done | 2026-10-08 | d5475d2 | 14 new (test_raw); suite 36 passed | `usfin raw prune --dry-run` on the real (empty) store printed `dry run: 0 candidates, 0 blobs, 0 bytes`, exit 0; `db info` unchanged (version 1). Every body (bytes, stream or chunk iterable) is spooled to a temp file in `CHUNK_SIZE` reads while hashing, then gzipped or renamed to `.zip` — never read whole, no temp left behind. Prune ranks distinct blobs per dataset by latest fetch (an unchanged ZIP fetched twice is one blob), marks rows in one transaction, deletes blobs only no unpruned row still uses. Plan amended (Raw store): `raw.open(con, raw_id)` takes the session; blob-vs-row ranking stated. |
 | S3 Rate limiter and HTTP client | done | 2026-10-08 | c6cfb02 | 27 new (test_ratelimit 9, test_http 18); suite 63 passed | `usfin http get …/debt_to_penny?page%5Bsize%5D=1` (live, keyless) printed `status: 200`, `raw_id: 1`, `bytes: 1765`, exit 0; the `raw_response` row has source `manual`, dataset `http_get`, the encoded URL, `application/json`, a request sha, and `raw.open` returns the JSON (decoded: httpx un-gzips before archiving). A second run made raw_id 2 in ~1.4 s. Unsorted, Fiscal Data returns the oldest record first (1993-04-01) — S7 must send `sort=`. No SEC request sent (SEC tested with respx only). Plan amended (HTTP): `Client(con, …)`, capacity-1 bucket, `hosts.yaml` shape, SEC hosts decided by code, only the final attempt archived, error/`SecBlocked` carry `raw_id`. |
 | S4 Calendars | done | 2026-10-08 | ecfb40c | 25 new (test_calendars); suite 88 passed | `usfin calendar 2026-10-12` printed `Mon (Columbus Day)` federal closed, bond closed, nyse open; `… 2026-04-03` `Fri (Good Friday)` federal open, bond closed, nyse closed; `… 2026-11-11` Veterans Day federal/bond closed, nyse open; a bad date exits 2. `holidays.NYSE()` already has the 2018/2025 mourning closures, `holidays.US` has no executive-order federal closures (2025-01-09) — overrides file is where those go. Plan amended (Calendars): `Calendars` object from `load_calendars`, `any` calendar, override precedence (federal moves bond, bond wins), strict prev/next, computed Good Friday, `usfin calendar`. |
-| S5 Job runner, run log, watermarks | todo | | | | |
+| S5 Job runner, run log, watermarks | done | 2026-10-08 | | 19 new (test_jobs); suite 107 passed | On the real store, `USFIN_DEMO=1 usfin run _demo` printed `_demo #1 ok rows 6` and `usfin jobs` listed run #1 and `alpha`/`beta` = 2026-10-07 — the Mac clock read 2026-10-08 00:22 UTC, i.e. 20:22 ET on the 7th, so the ET-date cap held. With `USFIN_DEMO_FAIL=beta`: `#2 failed rows 3`, exit 1, error `beta: RuntimeError: …`; a later failing run moved `alpha`'s `updated_at` but left `beta`'s from the run before (C7). Four runs left 6 `demo_item` rows (upserts) and 8 `raw_response` rows over 2 blobs. With another python process holding `data/usfin.duckdb`, `USFIN_LOCK_WAIT=1 usfin run _demo` exited 1 after ~1.3 s with `database busy — …`, `(not logged)`, and no new `job_run` or watermark change. Without `USFIN_DEMO`, `usfin run _demo` exits 2 `unknown job`. Plan amended (Jobs): fetch is `fetch(ctx, key)` per watermark key (a per-job `fetch(ctx)` could not fail one key alone), `ctx.advance`, ET today, lock → no run row, `load_registry`/`_demo`. |
 | S6 Reparse and chaining | todo | | | | |
 | S7 Fiscal Data client | todo | | | | |
 | S8 Fiscal Data registry job | todo | | | | |
