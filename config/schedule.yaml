@@ -112,3 +112,13 @@ jobs:
                                    # USFIN_BULK_LIMIT caps the members parsed per ZIP.
     calendar: any
     due: none
+  symbols:
+    cron: "0 7 * * *"              # Nasdaq Trader's symbol directory (nasdaqlisted.txt and
+                                   # otherlisted.txt), created ~03:03 ET; a file without its
+                                   # File Creation Time trailer is rejected (snapshot_rejected)
+    calendar: nyse
+    due: nyse
+    alerts:
+      zero_new_rows: {}            # no newer snapshot than the day's first watermark
+      stale_watermark: {n: 1}      # no new snapshot over a whole NYSE day
+      row_count_swing: {pct: 2}    # rows vs the file's previous snapshot (none for the first)
