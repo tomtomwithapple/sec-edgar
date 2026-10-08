@@ -13,6 +13,7 @@ from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
+from usfin.sources.edgar import tickers as edgar_tickers
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -432,6 +433,31 @@ def bls_releases(
         typer.echo(
             f"{release.release_date:%Y-%m-%d %a} {at:%H:%M}  {release.release_name}"
             + (f"  {', '.join(ids)}" if ids else "")
+        )
+
+
+edgar_app = typer.Typer(no_args_is_help=True, help="SEC EDGAR.")
+app.add_typer(edgar_app, name="edgar")
+
+
+@edgar_app.command("company")
+def edgar_company(
+    query: str = typer.Argument(..., help="Ticker in any spelling (BRK-B, BRK.B) or a CIK."),
+) -> None:
+    """Show a company's CIK, title and every ticker stored by job `edgar_tickers`."""
+    with _db_session(apply_migrations=True) as con:
+        rows = edgar_tickers.lookup(con, query)
+    if not rows:
+        typer.echo(f"no EDGAR company for {query!r} (run `usfin run edgar_tickers`?)", err=True)
+        raise typer.Exit(1)
+    last = None
+    for cik, ticker, title, norm, active, updated_at in rows:
+        if cik != last:
+            typer.echo(f"CIK {cik:010d}  {title}")
+            last = cik
+        typer.echo(
+            f"  {ticker:<10} {norm:<10} {'active' if active else 'inactive':<8}"
+            f"  updated {updated_at:%Y-%m-%d %H:%M:%S}Z"
         )
 
 

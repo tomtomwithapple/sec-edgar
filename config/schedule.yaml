@@ -62,3 +62,8 @@ jobs:
     cron: "0 6 * * mon"            # the release schedule; calendar_stale when it reaches < 30 days
     calendar: any
     due: none
+  edgar_tickers:
+    cron: "15 7 * * *"             # SEC's ticker map (company_tickers.json): a full file, no
+                                   # watermark; pairs it drops are kept inactive
+    calendar: any
+    due: none

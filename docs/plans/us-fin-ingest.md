@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S17 done — S18 blocked (FRED_API_KEY) — next: S19
+Status: S19 done — S18 blocked (FRED_API_KEY) — next: S20
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -665,6 +665,18 @@ zero-padded in URLs, stored as BIGINT.
   `https://www.sec.gov/files/company_tickers.json` → `edgar_company(cik, ticker, title,
   ticker_norm, active, updated_at)` PK (`cik`, `ticker`); `updated_at` changes only when a value
   changes; a pair missing from the latest file gets `active=false`.
+  *(Amended in S19.)* Live 2026-10-08: one compact JSON object keyed `"0".."10433"` (SEC's order),
+  values `{cik_str: int, ticker, title}`, 798 727 bytes `application/json`; 10 434 pairs, 8 016 CIKs
+  (one fund lists 45 tickers), no ticker under two CIKs, no two tickers with the same `ticker_norm`.
+  Tickers are uppercase with `-` before a class/suffix: preferreds `-PA`..`-PZ`, classes `-A`/`-B`,
+  **units `-UN` (50), warrants `-WT` (61), rights `-RI` (21)**, one `NONE.`. `updated_at` is the
+  `fetched_at` of the response that changed the row (title, `ticker_norm` or `active`), not the run
+  clock, so reparse rebuilds the identical table (key `company_tickers`, no watermark: a full file;
+  an empty or malformed file fails the key instead of deactivating everything; a non-200 stores
+  nothing). Migration `007_edgar_company.sql`; `ticker_norm` lives in `usfin.ticker`; `usfin edgar
+  company <ticker|cik>` lists every ticker of the matching companies. A SEC 403 or open block window
+  makes the run `failed` (the client raises `SecBlocked`), not `skipped` — the plan's "SEC jobs
+  record skipped" (How › HTTP) is not wired in the runner yet; S22 (the 15-minute feed) should.
 - Filings: `edgar_filing(accession_no PK, cik, form, filed_at, accepted_at NULL, report_date
   NULL, primary_doc NULL, is_amendment, source feed|index|submissions)` and
   `edgar_filing_party(accession_no, cik, role)` PK (`accession_no, cik, role`). `edgar_filing.cik`
@@ -749,7 +761,9 @@ snapshot → no check. Diff → `symbol_history(symbol, exchange, valid_from, va
 etf, …)` PK (`symbol, exchange, valid_from`): new symbol opens a row, gone symbol closes it,
 changed name/ETF flag closes and opens. `ticker_norm(s)`: uppercase, strip; `$` → `.P`; `.`,
 `-`, `/`, space → `.` (so `BRK-B`, `BRK/B` → `BRK.B`; `ABR$D`, `ABR-PD` → `ABR.PD`; `AAC.U`,
-`AAC-U` → `AAC.U`). View `symbol_edgar_match` joins open history rows to active `edgar_company`
+`AAC-U` → `AAC.U`). *(Found in S19.)* EDGAR spells units `-UN`, warrants `-WT`, rights `-RI`
+(`KCAC-UN` → `KCAC.UN`), so a Nasdaq `.U` unit will not meet EDGAR's `.UN` under this rule; S31
+checks the Nasdaq Trader spellings and decides (suffix map or unmatched). View `symbol_edgar_match` joins open history rows to active `edgar_company`
 rows on `ticker_norm`; `usfin symbols unmatched`.
 
 **Scheduler (C6, C7).** `config/schedule.yaml` lists every job with cron (ET), calendar
@@ -1171,7 +1185,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S16 BLS versioned observations | done | 2026-10-08 | 38691e1 | 20 new (test_bls_versions); suite 308 passed | No `BLS_API_KEY`, keyless v1; 2 live requests (the two runs). On `data/usfin.duckdb` (Mac clock 21:49 ET on 10-07): migration 005 applied; S15's `bls validate` response (raw 648, 21:42 ET) is already raw dataset `bls_timeseries`, so `usfin reparse bls` first stored it: **143 rows** (140 published values + the 3 `-` 2025 M10 gaps for CPI, core CPI, UNRATE, value NULL with footnote X/9), all `first_seen_at` 2026-10-08 01:42:35 UTC. `usfin run bls` → `bls #19 ok rows 0`, again → `#20 ok rows 0` (raw 649, 650: one request each for the seven keys, byte-identical 13 916-byte bodies, so even the first run had nothing new); watermarks CPI/core CPI/PPI/JOLTS 2026-M08, payrolls/UNRATE/AHE 2026-M09; no alerts. `bls_as_of(now())` for CPI: 2026 M08 334.131, M07 332.813, M06 332.568, M05 333.979; `bls_as_of(DATE '2026-10-07')` returns all 143 (21:42 ET is that New York day), `DATE '2026-10-06'` none. `usfin reparse bls` replayed 3 raw responses, deleted 143 and rebuilt 143, table md5 unchanged (960bd8ec…). `usfin schedule`: bls 09:00 on 10-08, 10-09, 10-13 (Columbus Day skipped). Plan amended (How › BLS): `-` periods stored as NULL versions (planning decision), migration 005 and the macro's argument types, one request for seven keys via the new `JobContext.memo` (Jobs), non-OK replies store nothing, **`bls validate` now stores observations** — it archives under the job's dataset, so without that a run after a validate dates values later than reparse does; `due: none` until S17, `value_jump` not wired (no date column). |
 | S17 BLS release calendar and retry | done | 2026-10-08 | 2136670 | 26 new (test_bls_calendar); suite 334 passed | www.bls.gov 403s the plan's `usfin/<version> (+https://…)` User-Agent (also with browser Accept/Sec-Fetch headers or `From:`, and any UA carrying a URL); a UA with a contact email and no URL gets 200, so www.bls.gov now gets `usfin/<version> (<BLS_CONTACT_EMAIL>)` — new env var, set by the user in `.env` (was a block until then; a first run without it on `data/usfin.duckdb` failed #21 with ConfigError, no request, and raised alert #2 `calendar_stale`). Live with it set (Mac clock 2026-10-07 ET evening; migration 006 applied): `usfin run bls_calendar` → `#22 ok rows 313` (raw 651, 80 672 bytes `text/calendar`), again → `#23 ok rows 0` (C2); `usfin reparse bls_calendar` replayed 2 responses, 0 changes. **313 releases, 2025-01-03..2026-12-30**; 92 events map to configured series. `usfin bls releases --next 5`: 2026-10-14 08:30 CPI (CUSR0000SA0, CUSR0000SA0L1E); 10-15 08:30 PPI (WPSFD4); 11-03 **10:00** JOLTS; 11-06 08:30 Employment Situation (CES0000000001, LNS14000000, CES0500000003); 11-10 08:30 CPI. Calendar reaches 84 days ahead (> 30), so alert #2 was acked. `usfin schedule`: bls_calendar Mon 06:00 (10-12, 10-19, …). No api.bls.gov data request in this slice; retry tested with fakes. Plan amended (How › BLS, Conventions): iCal URL, the bls.gov User-Agent rule + `BLS_CONTACT_EMAIL`, release mapping (JOLTS releases at 10:00, after the 09:00 run, so its days always retry), `bls_release` + `bls_observation_dated` (migration 006), due days = release days (`due: {releases: bls_release}`, `alerts.DAY_SOURCES`), value_jump wired with per-series `jump_pct` and a period→date baseline (`Observed.jump_pct`, `watermark_date`), no generic zero_new_rows/stale_watermark for bls (period watermark; the retry raises `stale_watermark` past 12:00 ET), `Job.retry` + one-shot `bls_retry`. |
 | S18 ALFRED backfill | blocked: FRED_API_KEY not set in .env (needed to record fixtures and run); add it and re-run `/plan-build docs/plans/us-fin-ingest.md --slice S18` | | | | |
-| S19 EDGAR tickers and ticker_norm | todo | | | | |
+| S19 EDGAR tickers and ticker_norm | done | 2026-10-08 | | 21 new (test_edgar_tickers 10, test_ticker_norm 11); suite 355 passed | First live SEC traffic, 3 requests in all, no 403, `SEC_USER_AGENT` from `.env`: one `usfin http get` of company_tickers.json to record the fixture (raw 653, dataset `http_get`, 798 727 bytes, trimmed to 14 verbatim entries, 1 KB), then the Run. `usfin run edgar_tickers` on `data/usfin.duckdb` (Mac clock 22:27 ET on 10-07; migration 007 applied) → `#24 ok rows 10434` in 1.3 s; again → `#25 ok rows 0` (C2; same sha256 body); `usfin reparse edgar_tickers` replayed 2 responses, rows 0. `edgar_company` 10 434 rows, 8 016 CIKs, all active, 10 434 distinct `ticker_norm`. `usfin edgar company AAPL` → CIK 0000320193 Apple Inc., AAPL; `brk.b` → 0001067983 BRK-A/BRK-B (norm BRK.A/BRK.B); `ZZZZQ` exit 1. `usfin schedule`: edgar_tickers 07:15 daily (any). No alerts. Plan amended (How › SEC EDGAR, Nasdaq Trader): the file's shape and counts, `updated_at` = the changing response's `fetched_at` (so reparse is identical), EDGAR suffixes `-UN`/`-WT`/`-RI` (units won't meet Nasdaq `.U` under `ticker_norm` — S31 decides), and a SEC 403/block makes the run `failed`, not `skipped` (runner not wired; left to S22). |
 | S20 EDGAR submissions | todo | | | | |
 | S21 EDGAR companyfacts | todo | | | | |
 | S22 EDGAR feed and document queue | todo | | | | |
