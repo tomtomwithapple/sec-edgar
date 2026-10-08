@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S36 done — S18 blocked (FRED_API_KEY) — next: S33
+Status: S36 done — S18 blocked (FRED_API_KEY) — next: S37 (MTS fix, user decision), then S33
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -1638,6 +1638,13 @@ Green: in `sources/edgar/dailyindex.py` (How › SEC EDGAR › Daily index recon
 Run: `uv run usfin run edgar_reconcile` live now (outside publication time if possible) — no 403, no block; `usfin jobs` shows it ok; then confirm a normal EDGAR request still works.
 Done when: a server start at any hour never opens the SEC block through the reconcile; C5 still holds for real 403s.
 
+### S37 — Fix: Monthly Treasury Statement as true monthly series
+Depends on: S8, S9, S32 (decided by the user 2026-10-08 after S32 found `line_code_nbr` is a row position within each monthly release, not a series)
+Red: `tests/test_fiscal_mts.py` — from real `mts_table_1` fixtures of two consecutive releases: a derived table/view gives one row per (month, classification, record type) for receipts, outlays and deficit/surplus, taken from each release's current-month line only (prior-year and year-to-date lines excluded); a later release revising an earlier month is a new value for that month, not a duplicate; `value_jump` for `mts_table_1` runs on the derived series (no alert from line-position shifts); the series browser lists the derived MTS series and plots one point per month.
+Green: in `sources/fiscal.py` / a migration (How › Treasury Fiscal Data, Alerts, Web UI): define the series key from the release's own columns (verify on the real `fd_mts_table_1` which columns identify the current-month line and the classification — e.g. `classification_desc`, `record_type_cd`, `print_order_nbr`, `record_calendar_month/year` — and record the rule), expose it as `fd_mts_monthly`, rewire `jump_match`/`series` in `config/fiscal_data.yaml`, and point the series browser at it.
+Run: `uv run usfin run fiscal` and `usfin reparse fiscal` on the real DB; compare the derived FY2026 monthly deficit to the totals Treasury publishes in the same table; open `/series/fiscal/mts_monthly` (or the chosen route) with the server, then stop it.
+Done when: each month has exactly one value per classification, plotted without repeats, and the jump alert no longer fires on line-position shifts.
+
 ## Progress
 
 | Slice | Status | Date | Commit | Tests | Run showed |
@@ -1679,4 +1686,6 @@ Done when: a server start at any hour never opens the SEC block through the reco
 | S34 UI: unmatched symbols | todo | | | | |
 | S35 Ops: doctor, launchd, README, live smoke | todo | | | | |
 | S36 Fix: reconcile never requests an unpublished daily index | done | 2026-10-08 | e508dd9 | 9 new (test_edgar_dailyindex: before 22:30 ET today's file is not requested, after it is, `published_after` read from edgar.yaml, default 22:30, a 403 for today's index archived with no block and the run ok (watermark stays 10-06), a 403 for a future day's index returned with no block, a 403 for an earlier day's index and one outside `daily-index/` still open the block, and a scheduler catch-up at 03:47 ET 10-08 asks nothing of 10-08, runs ok, opens no block and keeps the watermark 10-07 — red reproduced S32's 403 exactly); suite 627 passed | Probes (`SEC_USER_AGENT` from `.env`, through `http.Client`): a HEAD of `master.20260930.idx` answered **403** (HEAD is refused on Archives; no block persisted, the probe process ended), then GETs of 10-07, 10-06, 10-02, 10-01 (raw 1056–1059, `edgar_probe`) all 200 with `Last-Modified` 22:01:39 / 22:02:38 / 22:03:59 / 22:02:19 ET the same evening → `published_after` 22:30 ET. The two 403 bodies of S32 (raw 1048, 1054) are S3 `AccessDenied` XML, not SEC's rate-limit page. `usfin run edgar_reconcile` live at 03:56 ET 10-08 (before publication): `#51 ok rows 0` in 9 s, 5 requests 10-01..10-07 all 200, **no request for 10-08, no 403, no block**; watermark `master` 2026-10-07 unchanged; `usfin jobs` shows it ok. The chain then made 1 200 more SEC requests, all 200 (normal EDGAR requests work): `edgar_form4 #52 ok rows 1074`, `edgar_sched13 #53 ok rows 788` (open queue form4 4 449 → 4 149, sched13 441 → 141), 7 min 43 s in all. Plan amended: How › SEC EDGAR › Daily index reconcile (SEC answers 403 not 404 for an unpublished day — the S23 text was wrong; publication time 22:02 ET measured, `published_after` 22:30; the client's daily-index 403 rule; a missing past day shows as 403 + block; HEAD refused). |
+| S37 Fix: Monthly Treasury Statement as true monthly series | todo | | | | |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
+- After S32 (user, 2026-10-08): MTS table 1 is derived into true monthly series (S37) rather than plotted/alerted by line position.
