@@ -21,18 +21,27 @@ feed queued first stays as it is.
 
 Window (C3): the federal days from min(watermark, today − 7 days) to today — 7 days of overlap, or
 back to the watermark after a longer outage — where the watermark (key `master`) is the newest day
-whose index parsed. A 404 for today's index is normal (published late in the evening); a 404 for
-an earlier federal day fails the key after the other days are parsed, so the gap stays visible and
-the watermark stays put. Every response is archived first (raw dataset `edgar_master_idx`, source
+whose index parsed. Today's index is requested only from `published_after` (New York time,
+`config/edgar.yaml` `daily_index:`, default 22:30): SEC writes each day's file about 22:02 ET that
+evening (Last-Modified of 10-01, 10-02, 10-06, 10-07, probed 2026-10-08), and before that it
+answers 403 — S32's 03:47 ET catch-up asked for master.20261008.idx and opened the SEC block (S36).
+After that time a 404 or 403 for today (SEC late; the client does not block on a daily-index 403
+for today or later) is normal; a 404 for an earlier federal day fails the key after the other days
+are parsed, so the gap stays visible and the watermark stays put (a 403 for one is SEC refusing us,
+C5: the block opens and the run fails). Every response is archived first (raw dataset `edgar_master_idx`, source
 `edgar`). Chained: `edgar_form4` (S24) and `edgar_sched13` (S25), as for the feed.
 """
 
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+
+import yaml
 
 from usfin import calendars, jobs, raw
+from usfin.settings import ConfigError
 from usfin.sources.edgar import feed, pending
 from usfin.sources.edgar import filings as edgar_filings
 
@@ -47,6 +56,8 @@ COLUMNS = "CIK|Company Name|Form Type|Date Filed|File Name"
 SEPARATOR = re.compile(r"^-{20,}$")
 FILE_NAME = re.compile(r"edgar/data/\d+/(\d{10}-\d{2}-\d{6})\.txt")
 URL_DAY = re.compile(r"/master\.(\d{8})\.idx$")
+PUBLISHED_AFTER_DEFAULT = time(22, 30)
+"""New York time from which today's index is requested; SEC wrote 10-01..10-07's at 22:01–22:04."""
 
 
 class IndexError_(Exception):
@@ -135,13 +146,42 @@ def day_url(d: date) -> str:
     return f"{BASE}{d.year}/QTR{(d.month - 1) // 3 + 1}/master.{d:%Y%m%d}.idx"
 
 
-def window(cals: calendars.Calendars, today: date, watermark: date | None) -> list[date]:
-    """Federal days from min(watermark, today − 7 days) to today."""
+def load_published_after(config_dir: Path | str) -> time:
+    """`daily_index: published_after: "HH:MM"` (New York) in `<config_dir>/edgar.yaml`."""
+    path = Path(config_dir) / "edgar.yaml"
+    data = (yaml.safe_load(path.read_text("utf-8")) if path.is_file() else None) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: expected a mapping")
+    section = data.get("daily_index") or {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path}: daily_index must be a mapping")
+    value = section.get("published_after")
+    if value is None:
+        return PUBLISHED_AFTER_DEFAULT
+    if isinstance(value, int) and not isinstance(value, bool):  # YAML 1.1 reads 22:30 as 1350
+        value = f"{value // 60:02d}:{value % 60:02d}"
+    try:
+        return time.fromisoformat(str(value))
+    except ValueError:
+        raise ConfigError(f"{path}: daily_index.published_after {value!r} is not HH:MM") from None
+
+
+def published(now: datetime, published_after: time) -> bool:
+    """Whether today's (New York) index may exist at `now`."""
+    return now.astimezone(jobs.ET).time() >= published_after
+
+
+def window(
+    cals: calendars.Calendars, today: date, watermark: date | None, *, with_today: bool = True
+) -> list[date]:
+    """Federal days from min(watermark, today − 7 days) to today (to yesterday without
+    `with_today`)."""
     start = today - LOOKBACK
     if watermark is not None:
         start = min(start, watermark)
+    last = today if with_today else today - timedelta(days=1)
     days, d = [], start
-    while d <= today:
+    while d <= last:
         if cals.is_day(CALENDAR, d):
             days.append(d)
         d += timedelta(days=1)
@@ -158,12 +198,13 @@ def _watermark(ctx: "jobs.JobContext") -> date | None:
 
 def _fetch(ctx: "jobs.JobContext", key: str) -> Sequence[int]:
     cals = calendars.load_calendars(ctx.settings.config_dir)
+    with_today = published(ctx.now, load_published_after(ctx.settings.config_dir))
     out, missing = [], []
-    for d in window(cals, ctx.today, _watermark(ctx)):
+    for d in window(cals, ctx.today, _watermark(ctx), with_today=with_today):
         url = day_url(d)
         raw_id, response = ctx.client.get(url, source=SOURCE, dataset=RAW_DATASET)
-        if response.status_code == 404:
-            if d < ctx.today:
+        if response.status_code == 404 or (response.status_code == 403 and d >= ctx.today):
+            if d < ctx.today:  # today's may be late; 403 for a past day never gets here (C5)
                 missing.append(d)
         elif response.status_code != 200:
             raise IndexError_(f"{url} answered {response.status_code}", raw_id=raw_id)

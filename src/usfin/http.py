@@ -6,7 +6,11 @@ checks the SEC rules (no `SEC_USER_AGENT` → `ConfigError`; inside a block wind
 transport errors are retried with exponential backoff (1, 2, 4, 8 s; `Retry-After` honoured),
 at most `MAX_TRIES` attempts. The final response, whatever its status, is archived through the
 raw store before the call returns or raises. A SEC 403 opens a process-wide block window
-(`SEC_BLOCK_SECONDS`) and raises `SecBlocked`; nothing sleeps through it.
+(`SEC_BLOCK_SECONDS`) and raises `SecBlocked`; nothing sleeps through it — except a 403 for a
+daily-index file of today or a later day (New York date): the S3 store behind www.sec.gov answers
+`AccessDenied` (403, `application/xml`) for an object that does not exist yet, so such a 403 means
+"not published yet" and is returned to the caller like a 404, with no block (S36; C5 holds for
+every other SEC 403, a past day's daily index included).
 
 www.bls.gov (the release calendar; not api.bls.gov) answers 403 to any User-Agent without a
 contact email, and also to one that carries a URL (probed 2026-10-08), so requests to it send
@@ -17,10 +21,11 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 from typing import Any, Self
+from zoneinfo import ZoneInfo
 
 import duckdb
 import httpx
@@ -36,6 +41,8 @@ USFIN_USER_AGENT = f"usfin/{__version__} (+https://github.com/tomtomtomdev/sec-e
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 BLS_WWW_HOSTS = frozenset({"www.bls.gov"})
 _EMAIL = re.compile(r"[^@\s()<>/]+@[^@\s()<>/]+\.[^@\s()<>/]+")
+ET = ZoneInfo("America/New_York")
+_DAILY_INDEX_DAY = re.compile(r"^/Archives/edgar/daily-index/\d{4}/QTR[1-4]/[a-z]+\.(\d{8})\.")
 
 
 class HttpError(Exception):
@@ -95,6 +102,20 @@ def _retry_after(response: httpx.Response) -> float | None:
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     return max(0.0, (when - _wall_now()).total_seconds())
+
+
+def unpublished_daily_index(url: httpx.URL | str, today: date) -> bool:
+    """True for a www.sec.gov daily-index file (`<name>.YYYYMMDD.<ext>`) of `today` or later: SEC
+    answers 403, not 404, while it does not exist yet (master.20261008.idx at 03:47 ET, S32)."""
+    url = httpx.URL(str(url))
+    m = _DAILY_INDEX_DAY.match(url.path) if url.host == "www.sec.gov" else None
+    if m is None:
+        return False
+    try:
+        day = date(int(m[1][:4]), int(m[1][4:6]), int(m[1][6:]))
+    except ValueError:
+        return False
+    return day >= today
 
 
 class Client:
@@ -219,6 +240,8 @@ class Client:
                 if stream:
                     response.close()
             if sec and response.status_code == 403:
+                if unpublished_daily_index(request.url, _wall_now().astimezone(ET).date()):
+                    return raw_id, response  # not published yet: the caller decides, no block
                 self.sec_block.block()
                 raise SecBlocked(
                     f"SEC answered 403 for {request.url}; SEC requests blocked for "

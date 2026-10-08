@@ -78,8 +78,10 @@ jobs:
       stale_watermark: {n: 1}      # no new filing seen over a whole federal day
   edgar_reconcile:
     cron: "30 23 * * *"            # master.YYYYMMDD.idx for the federal days from
-                                   # min(watermark, today - 7d); today's index may not be out
-                                   # yet (404, normal). Form 4 / 13D/G accessions are queued;
+                                   # min(watermark, today - 7d); today's only from edgar.yaml
+                                   # daily_index.published_after (22:30 ET; a run before it,
+                                   # e.g. a catch-up at startup, stops at yesterday), and a
+                                   # 404/403 for it is normal. Form 4 / 13D/G accessions are queued;
                                    # chains edgar_form4, edgar_sched13.
     calendar: federal
     due: federal

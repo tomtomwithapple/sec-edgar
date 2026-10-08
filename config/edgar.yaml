@@ -20,3 +20,10 @@ form4:
 # SC 13D/13G one (no XML; skipped and counted) 1; a run drains at most this many, oldest first.
 sched13:
   max_docs_per_run: 300
+
+# Daily index (job edgar_reconcile). Today's master.YYYYMMDD.idx is requested only from this New
+# York time on: SEC wrote 10-01, 10-02, 10-06 and 10-07's files at 22:01-22:04 ET (Last-Modified,
+# probed 2026-10-08) and answers 403 (S3 AccessDenied) for a file not written yet — S32's 03:47 ET
+# catch-up asked for one and opened the 10-minute SEC block. The 23:30 cron is after it.
+daily_index:
+  published_after: "22:30"

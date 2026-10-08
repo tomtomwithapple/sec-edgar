@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S32 done — S18 blocked (FRED_API_KEY) — next: S36 (fix found by S32), then S33
+Status: S36 done — S18 blocked (FRED_API_KEY) — next: S33
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -307,6 +307,10 @@ failing after 5 tries is archived and raises `HttpError(raw_id, response)`, a tr
 raises `HttpError` with no `raw_id`; a SEC 403 is archived, not retried, and raises `SecBlocked`
 (a `HttpError`). The process-wide block is `http.SEC_BLOCK` (`.blocked()`, `.remaining()`) and
 the limiters `ratelimit.LIMITERS`. `usfin http get URL [--source] [--dataset]` is the manual probe.
+*(Amended in S36.)* One SEC 403 does not block: a `www.sec.gov` daily-index file
+(`daily-index/YYYY/QTRn/<name>.YYYYMMDD.*`) of today or a later New York day is not written yet
+(S3 `AccessDenied`), so the client archives it and returns it like a 404 (How › SEC EDGAR › Daily
+index reconcile).
 
 **Calendars (C6).** `is_federal_day(d)`: weekday, not in `holidays.US(observed=True)`;
 `is_bond_day(d)`: federal day and not Good Friday; `is_nyse_day(d)`: weekday, not in
@@ -828,7 +832,8 @@ zero-padded in URLs, stored as BIGINT.
 - Daily index reconcile (job `edgar_reconcile`, 23:30 ET on federal days, raw dataset
   `edgar_master_idx`): `Archives/edgar/daily-index/YYYY/QTRn/master.YYYYMMDD.idx` for federal
   days from max(watermark − 7 days, today − 7 days) to today (404 for a not-yet-published day is
-  normal) → `edgar_filing` (`source='index'`) and `edgar_filing_party` (role `index`); missing
+  normal — *wrong, S36: SEC answers 403, and today's file is not asked for before it can exist*)
+  → `edgar_filing` (`source='index'`) and `edgar_filing_party` (role `index`); missing
   Form 4 / 13D/G accessions are enqueued in `pending_doc` and drained by the same chain (C14).
   *(Amended in S23.)* **The window was wrong here and in the S23 entry:** max(watermark − 7 days,
   today − 7 days) is today − 7 days for any watermark not in the future, so it ignored outages,
@@ -851,6 +856,26 @@ zero-padded in URLs, stored as BIGINT.
   a row the feed queued first stays. The 10-07 index was already out at 23:21 ET (`Last Data
   Received: Oct 7`) and held all 628 feed accessions. Module `usfin.sources.edgar.dailyindex`, raw
   dataset `edgar_master_idx`, schedule `30 23 * * *` federal, `due: federal`, `stale_watermark n: 1`.
+  *(Amended in S36.)* **SEC answers 403, not 404, for a daily index not written yet**, and the
+  window must not ask for it before it can exist: S32's `usfin serve` start at 03:47 ET ran the
+  catch-up `edgar_reconcile` (its 23:30 fire was after the last ok run), which asked for
+  `master.20261008.idx`; SEC answered 403 twice (raw 1048, 1054: `application/xml`, the S3 store's
+  `<Error><Code>AccessDenied</Code>…`, 243/263 bytes — not SEC's HTML rate-limit page), and each
+  opened the 10-minute SEC block and failed the run. **Publication time:** `Last-Modified` of
+  10-01, 10-02, 10-06 and 10-07's `master.idx` (GET, 2026-10-08) is 22:02:19, 22:03:59, 22:02:38,
+  22:01:39 ET the same evening (S23's 23:21 ET run found 10-07's out). Built: today's file is in
+  the window only from `published_after` (New York time, `config/edgar.yaml` `daily_index:
+  published_after`, default **22:30**; `dailyindex.load_published_after`, `published(now, t)`,
+  `window(…, with_today=)`), so a run before it — any catch-up at startup or on wake — stops at
+  yesterday, leaves the watermark where it was and sends nothing for today. **403 classification
+  (C5 kept):** `http.Client` returns (archived, no block, no raise) a SEC 403 only for a
+  `www.sec.gov/Archives/edgar/daily-index/YYYY/QTRn/<name>.YYYYMMDD.*` file of today or a later
+  New York day (`http.unpublished_daily_index`); the job treats a 403 like a 404 for today (SEC
+  late after 22:30: normal, watermark stays). Every other SEC 403 still blocks and raises —
+  including a past day's daily index (a missing past file answers 403 too, so the "404 for an
+  earlier federal day" rule above in practice shows as a `failed` run plus the block, which keeps
+  the gap visible). **HEAD is not usable on SEC Archives:** a HEAD of an existing `master.idx`
+  answered 403 (a probe, raw `edgar_probe`) — probe with GET.
   **Chain:** none yet — S24/S25 add `edgar_form4`/`edgar_sched13` to **both** `feed.JOB.then` and
   `dailyindex.JOB.then`. *(S24: `edgar_form4` is in both; the feed's `then` is now `edgar_submissions,
   edgar_companyfacts, edgar_form4`, the reconcile's `edgar_form4`. S25: both end with `edgar_sched13`.)*
@@ -1653,5 +1678,5 @@ Done when: a server start at any hour never opens the SEC block through the reco
 | S33 UI: EDGAR company and screen | todo | | | | |
 | S34 UI: unmatched symbols | todo | | | | |
 | S35 Ops: doctor, launchd, README, live smoke | todo | | | | |
-| S36 Fix: reconcile never requests an unpublished daily index | todo | | | | |
+| S36 Fix: reconcile never requests an unpublished daily index | done | 2026-10-08 | | 9 new (test_edgar_dailyindex: before 22:30 ET today's file is not requested, after it is, `published_after` read from edgar.yaml, default 22:30, a 403 for today's index archived with no block and the run ok (watermark stays 10-06), a 403 for a future day's index returned with no block, a 403 for an earlier day's index and one outside `daily-index/` still open the block, and a scheduler catch-up at 03:47 ET 10-08 asks nothing of 10-08, runs ok, opens no block and keeps the watermark 10-07 — red reproduced S32's 403 exactly); suite 627 passed | Probes (`SEC_USER_AGENT` from `.env`, through `http.Client`): a HEAD of `master.20260930.idx` answered **403** (HEAD is refused on Archives; no block persisted, the probe process ended), then GETs of 10-07, 10-06, 10-02, 10-01 (raw 1056–1059, `edgar_probe`) all 200 with `Last-Modified` 22:01:39 / 22:02:38 / 22:03:59 / 22:02:19 ET the same evening → `published_after` 22:30 ET. The two 403 bodies of S32 (raw 1048, 1054) are S3 `AccessDenied` XML, not SEC's rate-limit page. `usfin run edgar_reconcile` live at 03:56 ET 10-08 (before publication): `#51 ok rows 0` in 9 s, 5 requests 10-01..10-07 all 200, **no request for 10-08, no 403, no block**; watermark `master` 2026-10-07 unchanged; `usfin jobs` shows it ok. The chain then made 1 200 more SEC requests, all 200 (normal EDGAR requests work): `edgar_form4 #52 ok rows 1074`, `edgar_sched13 #53 ok rows 788` (open queue form4 4 449 → 4 149, sched13 441 → 141), 7 min 43 s in all. Plan amended: How › SEC EDGAR › Daily index reconcile (SEC answers 403 not 404 for an unpublished day — the S23 text was wrong; publication time 22:02 ET measured, `published_after` 22:30; the client's daily-index 403 rule; a missing past day shows as 403 + block; HEAD refused). |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.

@@ -58,6 +58,7 @@ class Clock:
 def clock(monkeypatch):
     c = Clock(utc(2026, 10, 8, 3, 30))  # 23:30 ET on Wednesday 10-07
     monkeypatch.setattr(raw, "_utcnow", c.naive)
+    monkeypatch.setattr(http, "_wall_now", c)
     return c
 
 
@@ -93,12 +94,22 @@ def _header_only() -> bytes:
     return body[: body.index(b"-" * 80) + 80] + b"\n"
 
 
+# SEC's answer for master.20261008.idx at 03:47 ET on 10-08 (raw 1054, S32's catch-up): the S3
+# store behind www.sec.gov denies an object that does not exist yet, as `application/xml`
+S3_DENIED = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>AccessDenied</Code><Message>Access'
+    b" Denied</Message><RequestId>QCXZ859JH74PZ141</RequestId><HostId>ar9YYyc6</HostId></Error>"
+)
+
+
 class Fake:
-    """Serves master.YYYYMMDD.idx: the fixture for 10-06, 404 for `missing`, else no lines."""
+    """Serves master.YYYYMMDD.idx: the fixture for 10-06, 404 for `missing`, SEC's 403 for
+    `unpublished`, else no lines."""
 
     def __init__(self):
         self.files = {"20261006": IDX.read_bytes()}
         self.missing = {"20261007"}  # today's index is not out at 23:30 ET
+        self.unpublished: set[str] = set()
         self.requests: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -107,6 +118,10 @@ class Fake:
         day = name.removeprefix("master.").removesuffix(".idx")
         if day in self.missing:
             return httpx.Response(404, text="<html>Not Found</html>")
+        if day in self.unpublished:
+            return httpx.Response(
+                403, content=S3_DENIED, headers={"content-type": "application/xml"}
+            )
         body = self.files.get(day, _header_only())
         return httpx.Response(
             200, content=body, headers={"content-type": "application/octet-stream"}
@@ -383,3 +398,112 @@ def test_the_reconcile_is_scheduled_at_23_30_on_federal_days():
     fires = scheduler.next_fires(entry, CALS, datetime(2026, 10, 9, 23, 0, tzinfo=jobs.ET), 2)
     assert [f.strftime("%m-%d %H:%M") for f in fires] == ["10-09 23:30", "10-13 23:30"]
     assert "usfin.sources.edgar.dailyindex" in jobs.SOURCE_MODULES
+
+
+# --- publication time and SEC's 403 for an unpublished day (S36) --------------------------------
+
+# Last-Modified of master.YYYYMMDD.idx, probed 2026-10-08: 10-01 22:02:19, 10-02 22:03:59,
+# 10-06 22:02:38, 10-07 22:01:39 ET — each day's index is out about 22:02 ET the same evening.
+EARLY = utc(2026, 10, 8, 7, 47)  # 03:47 ET on Thursday 10-08: S32's serve start
+
+
+def test_before_publication_time_todays_index_is_not_requested(settings, fake, clock):
+    fake.missing.clear()  # 10-07 is out by now
+    result = _run(settings, clock, when=EARLY)
+    assert result.status == "ok", result.error
+    assert "20261008" not in fake.days()
+    assert fake.days() == ["20261001", "20261002", "20261005", "20261006", "20261007"]
+
+
+def test_after_publication_time_todays_index_is_requested(settings, fake, clock):
+    fake.missing.clear()
+    result = _run(settings, clock, when=utc(2026, 10, 9, 2, 45))  # 22:45 ET on 10-08
+    assert result.status == "ok", result.error
+    assert fake.days()[-1] == "20261008"
+
+
+def test_the_publication_time_is_configured_in_edgar_yaml(settings, fake, clock):
+    path = settings.config_dir / "edgar.yaml"
+    path.write_text(
+        path.read_text("utf-8") + '\ndaily_index:\n  published_after: "23:45"\n', "utf-8"
+    )
+    assert dailyindex.load_published_after(settings.config_dir).isoformat() == "23:45:00"
+    result = _run(settings, clock)  # 23:30 ET: before 23:45
+    assert result.status == "ok", result.error
+    assert "20261007" not in fake.days()
+
+
+def test_the_default_publication_time_is_22_30_et(settings):
+    assert dailyindex.load_published_after(REPO_CONFIG).isoformat() == "22:30:00"
+    assert dailyindex.published(EARLY, dailyindex.load_published_after(REPO_CONFIG)) is False
+    assert dailyindex.published(utc(2026, 10, 9, 2, 30), dailyindex.time(22, 30)) is True
+
+
+def test_a_403_for_todays_unpublished_index_is_not_a_block(settings, fake, clock):
+    fake.missing.clear()
+    fake.unpublished.add("20261007")  # 23:30 ET and SEC is late tonight
+    result = _run(settings, clock)
+    assert result.status == "ok", result.error
+    assert not http.SEC_BLOCK.blocked()
+    assert _query(settings, "SELECT key, value FROM watermark WHERE job = 'edgar_reconcile'") == [
+        ("master", "2026-10-06")
+    ]
+    assert _query(
+        settings, "SELECT http_status FROM raw_response WHERE url LIKE '%master.20261007.idx'"
+    ) == [(403,)]  # archived like any response (C1)
+
+
+def test_a_403_for_a_future_days_index_is_not_a_block(settings, clock):
+    url = dailyindex.day_url(date(2026, 10, 9))
+    with respx.mock() as router, store.session(settings.db_path, wait=0) as con:
+        store.migrate(con)
+        router.get(url).mock(return_value=httpx.Response(403, content=S3_DENIED))
+        with http.Client(con, settings=settings) as client:
+            raw_id, response = client.get(url, source="edgar", dataset="edgar_master_idx")
+    assert response.status_code == 403 and raw_id > 0
+    assert not http.SEC_BLOCK.blocked()
+
+
+def test_a_403_for_an_earlier_days_index_still_opens_the_block(settings, fake, clock):
+    fake.missing.clear()
+    fake.unpublished.add("20261002")  # a published day: this 403 is SEC refusing us (C5)
+    result = _run(settings, clock)
+    assert result.status == "failed" and "403" in result.error
+    assert http.SEC_BLOCK.blocked()
+
+
+def test_a_403_outside_the_daily_index_still_opens_the_block(settings, clock):
+    url = "https://www.sec.gov/Archives/edgar/data/320193/master.20261009.idx"
+    with respx.mock() as router, store.session(settings.db_path, wait=0) as con:
+        store.migrate(con)
+        router.get(url).mock(return_value=httpx.Response(403, content=S3_DENIED))
+        with http.Client(con, settings=settings) as client, pytest.raises(http.SecBlocked):
+            client.get(url, source="edgar", dataset="edgar_master_idx")
+    assert http.SEC_BLOCK.blocked()
+
+
+def test_catchup_at_server_start_before_publication_asks_nothing_of_today(settings, fake, clock):
+    fake.missing.clear()
+    fake.unpublished.add("20261008")  # what SEC answered S32's 03:47 ET catch-up
+    assert _run(settings, clock, when=utc(2026, 10, 8, 3, 21)).status == "ok"  # 23:21 ET 10-07
+    before = _query(settings, "SELECT key, value FROM watermark WHERE job = 'edgar_reconcile'")
+    fake.requests.clear()
+    clock.t = EARLY
+    reg = jobs.Registry()
+    reg.register(replace(dailyindex.JOB, then=()))
+    sched = scheduler.Scheduler(settings, reg, clock=clock, wait=0)
+    try:
+        sched.start()
+        assert sched.catchup() == ["edgar_reconcile"]  # the 23:30 ET fire is after the last ok
+        assert sched.wait_idle(10)
+    finally:
+        sched.shutdown()
+    assert "20261008" not in fake.days() and fake.days()
+    assert not http.SEC_BLOCK.blocked()
+    runs = _query(settings, "SELECT trigger, status FROM job_run ORDER BY id")
+    assert runs[-1] == ("catchup", "ok")
+    assert (
+        _query(settings, "SELECT key, value FROM watermark WHERE job = 'edgar_reconcile'")
+        == before
+        == [("master", "2026-10-07")]
+    )
