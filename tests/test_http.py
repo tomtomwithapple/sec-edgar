@@ -295,3 +295,43 @@ def test_cli_http_get_prints_status_raw_id_and_bytes(tmp_path, monkeypatch):
         raw.open(c, 1, raw_dir=tmp_path / "raw") as f,
     ):
         assert f.read() == b"0123456789"
+
+
+class _CutStream(httpx.SyncByteStream):
+    """A body that breaks off after its first chunk, as a long SEC bulk download can."""
+
+    def __iter__(self):
+        yield b"PK\x03\x04partial"
+        raise httpx.ReadError("connection reset mid-body")
+
+
+BULK = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
+
+
+@respx.mock
+def test_a_stream_cut_mid_body_is_retried_and_only_the_whole_body_archived(
+    con, make_client, tmp_path
+):
+    route = respx.get(BULK).mock(
+        side_effect=[
+            httpx.Response(200, stream=_CutStream()),
+            httpx.Response(200, content=b"PK\x03\x04whole body"),
+        ]
+    )
+    raw_id, _ = make_client().get(BULK, source="edgar", dataset="bulk_companyfacts", stream=True)
+    assert route.call_count == 2
+    assert _rows(con) == 1
+    with raw.open(con, raw_id, raw_dir=tmp_path / "raw") as fh:
+        assert fh.read() == b"PK\x03\x04whole body"
+    assert not [p for p in (tmp_path / "raw").rglob(".tmp-*")]
+
+
+@respx.mock
+def test_a_stream_cut_every_time_raises_http_error_and_archives_nothing(
+    con, make_client, tmp_path
+):
+    respx.get(BULK).mock(side_effect=lambda req: httpx.Response(200, stream=_CutStream()))
+    with pytest.raises(http.HttpError, match="tries"):
+        make_client().get(BULK, source="edgar", dataset="bulk_companyfacts", stream=True)
+    assert _rows(con) == 0
+    assert not [p for p in (tmp_path / "raw").rglob(".tmp-*")]

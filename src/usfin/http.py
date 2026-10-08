@@ -146,8 +146,16 @@ class Client:
         headers: dict[str, str] | None = None,
         json: Any = None,
         data: Any = None,
+        stream: bool = False,
     ) -> tuple[int, httpx.Response]:
-        """Send with limits and retries; archive the final response; return (raw_id, response)."""
+        """Send with limits and retries; archive the final response; return (raw_id, response).
+
+        With `stream` the body goes to the raw store in chunks as it arrives (EDGAR bulk ZIPs,
+        over a GiB) and is never held in memory; the returned response is then closed, so read
+        the body back with `raw.open(con, raw_id)`. A body cut off mid-stream is retried like a
+        transport error, and raises `HttpError` after `MAX_TRIES` (S26: before this, an httpx
+        read error mid-body escaped the client, so a 1.3 GB download could die after minutes
+        with nothing archived — the first live attempt did, its cause unrecorded)."""
         host = httpx.URL(url).host
         sec = ratelimit.is_sec_host(host)
         policy = self.hosts.policy(host)
@@ -177,7 +185,7 @@ class Client:
                 )
             bucket.acquire()
             try:
-                response = self._http.send(request)
+                response = self._http.send(request, stream=stream)
             except httpx.TransportError as exc:
                 if attempt == MAX_TRIES:
                     raise HttpError(
@@ -193,9 +201,23 @@ class Client:
                 self._sleep(retry_after if retry_after is not None else backoff)
                 continue
 
-            raw_id = self._archive(
-                response, source=source, dataset=dataset, request_sha=request_sha
-            )
+            try:
+                raw_id = self._archive(
+                    response, source=source, dataset=dataset, request_sha=request_sha,
+                    stream=stream,
+                )  # fmt: skip
+            except httpx.TransportError as exc:
+                # only a streamed body is read here: cut mid-body, nothing archived (the raw
+                # store drops its spool), so it is a transport failure like any other
+                if attempt == MAX_TRIES:
+                    raise HttpError(
+                        f"{method} {request.url} body cut off after {MAX_TRIES} tries: {exc!r}"
+                    ) from exc
+                self._sleep(BACKOFF_BASE * 2 ** (attempt - 1))
+                continue
+            finally:
+                if stream:
+                    response.close()
             if sec and response.status_code == 403:
                 self.sec_block.block()
                 raise SecBlocked(
@@ -228,14 +250,20 @@ class Client:
         return USFIN_USER_AGENT
 
     def _archive(
-        self, response: httpx.Response, *, source: str, dataset: str, request_sha: str
+        self,
+        response: httpx.Response,
+        *,
+        source: str,
+        dataset: str,
+        request_sha: str,
+        stream: bool = False,
     ) -> int:
         return raw.save(
             self.con,
             source=source,
             dataset=dataset,
             url=str(response.request.url),
-            body=response.content,
+            body=response.iter_bytes(raw.CHUNK_SIZE) if stream else response.content,
             http_status=response.status_code,
             content_type=response.headers.get("Content-Type"),
             request_sha256=request_sha,

@@ -23,6 +23,8 @@ class Settings:
     bls_contact_email: str | None
     fred_api_key: str | None
     alert_webhook_url: str | None
+    min_free_gb: float = 10.0
+    """`USFIN_MIN_FREE_GB`: free-disk floor for EDGAR bulk downloads (GiB)."""
 
 
 def _merged(env_file: Path | None) -> Mapping[str, str | None]:
@@ -45,6 +47,12 @@ def load_settings(env_file: Path | None = None) -> Settings:
     except ValueError:
         raise ConfigError(f"USFIN_LOCK_WAIT must be a number of seconds, got {raw_wait!r}") from None
 
+    raw_floor = get("USFIN_MIN_FREE_GB") or "10"
+    try:
+        min_free_gb = float(raw_floor)
+    except ValueError:
+        raise ConfigError(f"USFIN_MIN_FREE_GB must be a number of GiB, got {raw_floor!r}") from None
+
     return Settings(
         db_path=Path(get("USFIN_DB") or "data/usfin.duckdb"),
         raw_dir=Path(get("USFIN_RAW") or "raw"),
@@ -55,4 +63,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         bls_contact_email=get("BLS_CONTACT_EMAIL"),
         fred_api_key=get("FRED_API_KEY"),
         alert_webhook_url=get("ALERT_WEBHOOK_URL"),
+        min_free_gb=min_free_gb,
     )

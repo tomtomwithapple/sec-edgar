@@ -14,6 +14,7 @@ from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
+from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
 from usfin.sources.edgar import submissions as edgar_submissions
 from usfin.sources.edgar import tickers as edgar_tickers
@@ -511,6 +512,122 @@ def edgar_facts_cmd(
             typer.echo(f"CIK {c:010d}  facts {n}  tags {tags}{span}  requests {requests}")
     typer.echo(f"{time.monotonic() - started:.1f} s")
     if not ok:
+        raise typer.Exit(1)
+
+
+@edgar_app.command("backfill")
+def edgar_backfill_cmd(
+    dataset: str = typer.Argument(..., help="submissions or companyfacts."),
+    limit: int | None = typer.Option(
+        None, "--limit", min=1, help="Parse at most N members, spread evenly over the ZIP."
+    ),
+    cik: Annotated[
+        list[str] | None, typer.Option("--cik", help="Only this company's members; repeatable.")
+    ] = None,
+    estimate: bool = typer.Option(
+        False, "--estimate", help="Print the full-load projection from the newest sample; no request."
+    ),
+    check: bool = typer.Option(
+        False, "--check", help="HEAD the ZIP and print the free-disk verdict; download nothing."
+    ),
+    reuse: bool = typer.Option(
+        False, "--reuse", help="Parse the newest stored ZIP instead of downloading it again."
+    ),
+) -> None:
+    """Load an EDGAR bulk ZIP member by member (guarded by USFIN_MIN_FREE_GB; resumable)."""
+    spec = edgar_bulk.DATASETS.get(dataset)
+    if spec is None:
+        raise typer.BadParameter(
+            f"{dataset!r} is not one of {', '.join(edgar_bulk.DATASETS)}", param_hint="DATASET"
+        )
+    ciks = _parse_ciks(cik) if cik else None
+    settings = load_settings()
+    with _db_session(apply_migrations=True) as con:
+        if estimate:
+            est = edgar_bulk.latest_estimate(con, spec)
+            if est is None:
+                typer.echo(
+                    f"no estimate for {dataset}; sample first:"
+                    f" usfin edgar backfill {dataset} --limit 200",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            for line in edgar_bulk.estimate_lines(
+                est, settings, free=edgar_bulk.free_bytes(settings)
+            ):
+                typer.echo(line)
+            return
+        with usfin_http.Client(con, settings=settings) as client:
+            download_seconds = None
+            if reuse:
+                raw_id = edgar_bulk.newest_zip(con, spec)
+                if raw_id is None:
+                    typer.echo(f"no stored {spec.raw_dataset} ZIP to reuse", err=True)
+                    raise typer.Exit(1)
+                typer.echo(f"reusing raw {raw_id}")
+            else:
+                try:
+                    size = edgar_bulk.head(client, spec)
+                except (usfin_http.HttpError, edgar_bulk.BulkError) as exc:
+                    typer.echo(f"error: {exc}", err=True)
+                    raise typer.Exit(1) from None
+                verdict = edgar_bulk.guard(
+                    con, settings, spec, size, limit=len(ciks) if ciks else limit
+                )
+                typer.echo(f"guard: {verdict.describe()}")
+                if check:
+                    typer.echo("fits" if verdict.ok else "does not fit")
+                    raise typer.Exit(0 if verdict.ok else 1)
+                if not verdict.ok:
+                    typer.echo(f"disk low: {verdict.describe()}; not downloading", err=True)
+                    raise typer.Exit(1)
+                started = time.monotonic()
+                try:
+                    raw_id = edgar_bulk.download(client, spec)
+                except (usfin_http.HttpError, edgar_bulk.BulkError) as exc:
+                    typer.echo(f"error: {exc}", err=True)
+                    raise typer.Exit(1) from None
+                download_seconds = time.monotonic() - started
+                typer.echo(
+                    f"downloaded raw {raw_id}: {edgar_bulk.zip_bytes_of(con, raw_id)} bytes"
+                    f" in {download_seconds:.1f} s"
+                )
+        sample = ciks is None
+        before = edgar_bulk.db_bytes(con, settings) if sample else 0
+
+        def progress(done: edgar_bulk.Loaded) -> None:
+            if done.parsed % edgar_bulk.GUARD_EVERY == 0:
+                typer.echo(f"  {done.parsed} members, rows {done.rows}")
+
+        loaded = edgar_bulk.load(
+            con, settings, spec, raw_id, limit=limit, ciks=ciks, progress=progress
+        )
+        typer.echo(
+            f"members {loaded.members_total}, parsed {loaded.parsed}, rows {loaded.rows},"
+            f" skipped {loaded.skipped}, empty {loaded.empty}, errors {len(loaded.errors)}"
+            f" in {loaded.seconds:.1f} s"
+        )
+        for err in loaded.errors[:5]:
+            typer.echo(f"  error: {err}", err=True)
+        if sample and loaded.parsed:
+            after = edgar_bulk.db_bytes(con, settings)
+            scratch = edgar_bulk.measure(con, settings, spec, loaded.ciks)
+            est = edgar_bulk.Estimate(
+                spec.raw_dataset, edgar_bulk._utcnow(), raw_id,
+                edgar_bulk.zip_bytes_of(con, raw_id), loaded.members_total, loaded.parsed,
+                loaded.member_bytes_total, loaded.member_bytes_parsed, before, after,
+                loaded.rows, loaded.seconds, download_seconds, *scratch,
+            )  # fmt: skip
+            edgar_bulk.record_estimate(con, est)
+            typer.echo(f"estimate recorded (db +{after - before} bytes); see --estimate")
+    if loaded.stopped is not None:
+        typer.echo(
+            f"stopped: {loaded.stopped.describe()} after {loaded.parsed} members"
+            " (rerun to resume: usfin edgar backfill … --reuse)",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if loaded.errors:
         raise typer.Exit(1)
 
 
