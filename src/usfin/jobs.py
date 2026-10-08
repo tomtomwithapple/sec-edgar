@@ -9,8 +9,14 @@ recorded and the next key runs; the run closes `ok`, or `failed` with every key'
 Watermark dates are capped at today (America/New_York). The runner never consults a calendar:
 manual runs ignore it and the scheduler guards scheduled ones.
 
-`then` (chained jobs) and reparse use the same registry entries; the runner does not act on
-`then` yet.
+After an `ok` run, each job in `then` runs in turn (its own `job_run`, trigger `chained`, and
+its own chain); a failed run chains nothing, and a job runs at most once per chain.
+
+`reparse` rebuilds a job's normalized rows from stored raw responses with HTTP disabled: every
+unpruned `raw_response` whose dataset is in the job's parser map, in `fetched_at` order, in one
+transaction. For a versioned job, rows of its `versioned` tables derived from the selected raw
+responses (`raw_id`) are deleted first and replayed, so history is rebuilt, not appended.
+Reparse records no `job_run` and never moves a watermark.
 """
 
 import json
@@ -51,6 +57,8 @@ class Job:
     fetch: Callable[["JobContext", str], Sequence[int]]
     parsers: Mapping[str, Parser]
     then: tuple[str, ...] = ()
+    versioned: tuple[str, ...] = ()
+    """Tables whose rows carry the `raw_id` they came from; reparse deletes and replays them."""
 
     def key_list(self, ctx: "JobContext") -> list[str]:
         return list(self.keys(ctx) if callable(self.keys) else self.keys)
@@ -194,6 +202,7 @@ class RunResult:
     rows_upserted: int = 0
     error: str | None = None
     key_errors: dict[str, str] = field(default_factory=dict)
+    chained: list["RunResult"] = field(default_factory=list)
 
 
 def _run_key(ctx: JobContext, key: str) -> int:
@@ -274,16 +283,61 @@ def run_job(
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     wait: float | None = None,
     transport: httpx.BaseTransport | None = None,
+    chain: bool = True,
 ) -> RunResult:
-    """Run one job in this process and record it in `job_run`.
+    """Run one job in this process and record it in `job_run`, then its `then` chain if ok.
 
     A DB held by another process past the lock wait returns a `failed` result with no run id
     (the run log cannot be written), logged, with every watermark untouched.
     """
     if trigger not in TRIGGERS:
         raise ValueError(f"trigger must be one of {TRIGGERS}, got {trigger!r}")
-    job = (registry or load_registry()).get(name)
+    registry = registry or load_registry()
+    job = registry.get(name)
     settings = settings or load_settings()
+    result = _run_one(job, trigger, settings, clock, wait, transport)
+    if chain:
+        _run_chain(result, job, {name}, settings, registry, clock, wait, transport)
+    return result
+
+
+def _run_chain(
+    result: RunResult,
+    job: Job,
+    seen: set[str],
+    settings: Settings,
+    registry: Registry,
+    clock: Callable[[], datetime],
+    wait: float | None,
+    transport: httpx.BaseTransport | None,
+) -> None:
+    """Run `job.then` after an ok `result`, depth first; each job at most once per chain."""
+    if result.status != "ok":
+        return
+    for name in job.then:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            child = registry.get(name)
+        except UnknownJob as exc:
+            log.error("job %s: chained %s", job.name, exc)
+            result.chained.append(RunResult(name, None, "failed", 0, str(exc)))
+            continue
+        child_result = _run_one(child, "chained", settings, clock, wait, transport)
+        result.chained.append(child_result)
+        _run_chain(child_result, child, seen, settings, registry, clock, wait, transport)
+
+
+def _run_one(
+    job: Job,
+    trigger: str,
+    settings: Settings,
+    clock: Callable[[], datetime],
+    wait: float | None,
+    transport: httpx.BaseTransport | None,
+) -> RunResult:
+    name = job.name
     now = clock()
     ctx_args = {
         "settings": settings,
@@ -301,6 +355,107 @@ def run_job(
         error = f"database busy — another process holds the lock ({exc})"
         log.error("job %s not run: %s", name, error)
         return RunResult(name, None, "failed", 0, error)
+
+
+# --- reparse ------------------------------------------------------------------------------
+
+
+class NetworkDisabled(RuntimeError):
+    """A parser tried to send an HTTP request during reparse."""
+
+
+class ReparseFailed(Exception):
+    """A parser failed during reparse; the whole reparse was rolled back. `__cause__` is why."""
+
+
+class _NoNetwork(httpx.BaseTransport):
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        raise NetworkDisabled(f"HTTP is disabled during reparse: {request.method} {request.url}")
+
+
+@dataclass(frozen=True)
+class ReparseResult:
+    job: str
+    raw_ids: list[int]
+    skipped: list[int]
+    rows: int
+    deleted: int
+
+
+def _since_utc(since: date) -> datetime:
+    """Start of `since` in New York as naive UTC (how `fetched_at` is stored)."""
+    return _utc_naive(datetime(since.year, since.month, since.day, tzinfo=ET))
+
+
+def reparse(
+    con: duckdb.DuckDBPyConnection,
+    job: Job,
+    *,
+    settings: Settings,
+    now: datetime | None = None,
+    since: date | None = None,
+    transport: httpx.BaseTransport | None = None,
+) -> ReparseResult:
+    """Rebuild `job`'s normalized rows from its stored raw responses; no HTTP, all or nothing.
+
+    Selects `raw_response` rows whose dataset is in `job.parsers` (fetched on or after `since`,
+    a New York date, if given) in `fetched_at` order. Pruned rows are skipped with a warning and
+    their derived rows kept. A parser error rolls the whole reparse back and raises `ReparseFailed`.
+    """
+    now = now or datetime.now(UTC)
+    datasets = sorted(job.parsers)
+    if not datasets:
+        return ReparseResult(job.name, [], [], 0, 0)
+    sql = (
+        "SELECT id, dataset, pruned_at FROM raw_response"
+        f" WHERE dataset IN ({', '.join('?' for _ in datasets)})"
+    )
+    params: list[Any] = list(datasets)
+    if since is not None:
+        sql += " AND fetched_at >= ?"
+        params.append(_since_utc(since))
+    selected = con.execute(sql + " ORDER BY fetched_at, id", params).fetchall()
+    skipped = [raw_id for raw_id, _, pruned_at in selected if pruned_at is not None]
+    for raw_id in skipped:
+        log.warning("reparse %s: raw_response %s was pruned; skipped", job.name, raw_id)
+    todo = [(raw_id, dataset) for raw_id, dataset, pruned_at in selected if pruned_at is None]
+    ids = [raw_id for raw_id, _ in todo]
+
+    ctx = JobContext(
+        job=job,
+        con=con,
+        settings=settings,
+        today=now.astimezone(ET).date(),
+        now=now,
+        trigger="reparse",
+        run_id=None,
+        watermarks=get_watermarks(con, job.name),
+        transport=transport or _NoNetwork(),
+    )
+    deleted = rows = 0
+    con.execute("BEGIN TRANSACTION")
+    try:
+        existing = set(store.table_names(con))
+        for table in job.versioned:
+            if ids and table in existing:
+                deleted += con.execute(
+                    f'DELETE FROM "{table}" WHERE raw_id IN ({", ".join("?" for _ in ids)})',
+                    ids,
+                ).fetchone()[0]
+        for raw_id, dataset in todo:
+            try:
+                rows += int(job.parsers[dataset](ctx, raw_id) or 0)
+            except Exception as exc:
+                raise ReparseFailed(
+                    f"raw_response {raw_id} ({dataset}): {type(exc).__name__}: {exc}"
+                ) from exc
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    finally:
+        ctx.close()  # proposed watermarks are dropped: reparse never moves them
+    return ReparseResult(job.name, ids, skipped, rows, deleted)
 
 
 # --- listing ------------------------------------------------------------------------------

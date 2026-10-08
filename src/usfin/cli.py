@@ -47,11 +47,60 @@ def run(job: str = typer.Argument(..., help="Registered job name.")) -> None:
         known = ", ".join(registry.names()) or "none registered"
         raise typer.BadParameter(f"{exc} (known: {known})", param_hint="JOB") from None
     result = jobs.run_job(job, registry=registry)
-    run_id = f"#{result.run_id}" if result.run_id is not None else "(not logged)"
-    typer.echo(f"{job} {run_id} {result.status} rows {result.rows_upserted}")
-    if result.status != "ok":
-        typer.echo(f"error: {result.error}", err=True)
+    if not _echo_run(result):
         raise typer.Exit(1)
+
+
+def _echo_run(result: jobs.RunResult, depth: int = 0) -> bool:
+    """Print a run and its chained runs; return whether all of them were ok."""
+    run_id = f"#{result.run_id}" if result.run_id is not None else "(not logged)"
+    suffix = " (chained)" if depth else ""
+    typer.echo(
+        f"{'  ' * depth}{result.job} {run_id} {result.status} rows {result.rows_upserted}{suffix}"
+    )
+    ok = result.status == "ok"
+    if not ok:
+        typer.echo(f"{'  ' * depth}error: {result.error}", err=True)
+    for child in result.chained:
+        ok = _echo_run(child, depth + 1) and ok
+    return ok
+
+
+@app.command("reparse")
+def reparse(
+    job: str = typer.Argument(..., help="Registered job name."),
+    since: str | None = typer.Option(
+        None, help="Only raw responses fetched on or after this New York date (YYYY-MM-DD)."
+    ),
+) -> None:
+    """Rebuild JOB's normalized rows from stored raw responses (no HTTP request is made)."""
+    since_date = None
+    if since is not None:
+        try:
+            since_date = date.fromisoformat(since)
+        except ValueError:
+            raise typer.BadParameter(
+                f"{since!r} is not a YYYY-MM-DD date", param_hint="--since"
+            ) from None
+    registry = jobs.load_registry()
+    try:
+        target = registry.get(job)
+    except jobs.UnknownJob as exc:
+        known = ", ".join(registry.names()) or "none registered"
+        raise typer.BadParameter(f"{exc} (known: {known})", param_hint="JOB") from None
+    settings = load_settings()
+    with _db_session(apply_migrations=True) as con:
+        try:
+            result = jobs.reparse(con, target, settings=settings, since=since_date)
+        except jobs.ReparseFailed as exc:
+            typer.echo(f"{job} reparse failed, nothing changed: {exc}", err=True)
+            raise typer.Exit(1) from None
+    if result.skipped:
+        typer.echo(f"skipped {len(result.skipped)} pruned: {', '.join(map(str, result.skipped))}")
+    typer.echo(
+        f"{job} reparsed {len(result.raw_ids)} raw responses, rows {result.rows}"
+        + (f", deleted {result.deleted} versioned rows" if target.versioned else "")
+    )
 
 
 @app.command("jobs")

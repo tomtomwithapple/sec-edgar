@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S5 done — next: S6
+Status: S6 done — next: S7
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -337,6 +337,23 @@ the run, so a DB held past the lock wait means no `job_run` row: `run_job` logs 
 `SOURCE_MODULES` (each source slice adds its module) and adds the no-network `_demo` job (module
 `usfin.demo`, keys `alpha`, `beta`; `USFIN_DEMO_FAIL=<key>` fails that key) only when
 `USFIN_DEMO=1`. The runner never consults a calendar (scheduler guard is S10).
+*(Amended in S6.)* A job is versioned by naming its derived tables: `Job(…, versioned=(tables))`,
+each with a `raw_id` column. `jobs.reparse(con, job, since=)` runs in **one transaction**: delete
+the versioned rows of the selected raw ids, replay every parser in `fetched_at, id` order, commit;
+a parser error rolls everything back (deletes included) and raises `ReparseFailed` (naming the
+raw id; `__cause__` is the parser's error) — CLI exit 1 "nothing changed". HTTP is off by
+default (`ctx.client` gets a transport raising `NetworkDisabled`, not an httpx `TransportError`,
+so the client does not retry it). Reparse writes no `job_run` (the trigger CHECK has no
+`reparse`; `ctx.trigger = "reparse"`, `run_id = None`) and drops `ctx.advance` proposals:
+watermarks track what was fetched, not parsed. `--since` is a New York date (00:00 ET, like
+`bls_as_of`). A pruned row is skipped with a warning **and its derived versioned rows are kept**
+(deleting rows that cannot be replayed would lose history). Chaining: after an `ok` run,
+`run_job` runs each `then` job depth first (child, its chain, then the next sibling), each
+`_run_one` opening its own session and `job_run` (trigger `chained`); a failed run chains
+nothing, a failed child does not stop its siblings, a job runs at most once per chain (cycles
+stop), an unknown name becomes a `failed` result with no run id. `RunResult.chained` holds the
+children; `usfin run` prints them indented with `(chained)` and exits 1 if any run failed;
+`run_job(chain=False)` runs the job alone.
 
 **Job names (complete list).** `fiscal`, `auction_xcheck`, `treasurydirect`, `bls`,
 `bls_calendar`, `edgar_tickers`, `edgar_feed`, `edgar_submissions`, `edgar_companyfacts`,
@@ -861,7 +878,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S3 Rate limiter and HTTP client | done | 2026-10-08 | c6cfb02 | 27 new (test_ratelimit 9, test_http 18); suite 63 passed | `usfin http get …/debt_to_penny?page%5Bsize%5D=1` (live, keyless) printed `status: 200`, `raw_id: 1`, `bytes: 1765`, exit 0; the `raw_response` row has source `manual`, dataset `http_get`, the encoded URL, `application/json`, a request sha, and `raw.open` returns the JSON (decoded: httpx un-gzips before archiving). A second run made raw_id 2 in ~1.4 s. Unsorted, Fiscal Data returns the oldest record first (1993-04-01) — S7 must send `sort=`. No SEC request sent (SEC tested with respx only). Plan amended (HTTP): `Client(con, …)`, capacity-1 bucket, `hosts.yaml` shape, SEC hosts decided by code, only the final attempt archived, error/`SecBlocked` carry `raw_id`. |
 | S4 Calendars | done | 2026-10-08 | ecfb40c | 25 new (test_calendars); suite 88 passed | `usfin calendar 2026-10-12` printed `Mon (Columbus Day)` federal closed, bond closed, nyse open; `… 2026-04-03` `Fri (Good Friday)` federal open, bond closed, nyse closed; `… 2026-11-11` Veterans Day federal/bond closed, nyse open; a bad date exits 2. `holidays.NYSE()` already has the 2018/2025 mourning closures, `holidays.US` has no executive-order federal closures (2025-01-09) — overrides file is where those go. Plan amended (Calendars): `Calendars` object from `load_calendars`, `any` calendar, override precedence (federal moves bond, bond wins), strict prev/next, computed Good Friday, `usfin calendar`. |
 | S5 Job runner, run log, watermarks | done | 2026-10-08 | e92cd24 | 19 new (test_jobs); suite 107 passed | On the real store, `USFIN_DEMO=1 usfin run _demo` printed `_demo #1 ok rows 6` and `usfin jobs` listed run #1 and `alpha`/`beta` = 2026-10-07 — the Mac clock read 2026-10-08 00:22 UTC, i.e. 20:22 ET on the 7th, so the ET-date cap held. With `USFIN_DEMO_FAIL=beta`: `#2 failed rows 3`, exit 1, error `beta: RuntimeError: …`; a later failing run moved `alpha`'s `updated_at` but left `beta`'s from the run before (C7). Four runs left 6 `demo_item` rows (upserts) and 8 `raw_response` rows over 2 blobs. With another python process holding `data/usfin.duckdb`, `USFIN_LOCK_WAIT=1 usfin run _demo` exited 1 after ~1.3 s with `database busy — …`, `(not logged)`, and no new `job_run` or watermark change. Without `USFIN_DEMO`, `usfin run _demo` exits 2 `unknown job`. Plan amended (Jobs): fetch is `fetch(ctx, key)` per watermark key (a per-job `fetch(ctx)` could not fail one key alone), `ctx.advance`, ET today, lock → no run row, `load_registry`/`_demo`. |
-| S6 Reparse and chaining | todo | | | | |
+| S6 Reparse and chaining | done | 2026-10-08 | | 19 new (test_reparse); suite 126 passed | On the real store (8 `_demo` raw rows from S5), `USFIN_DEMO=1 usfin reparse _demo` printed `_demo reparsed 8 raw responses, rows 24`, exit 0; `raw_response` (10), `job_run` (4), both watermarks and their `updated_at` unchanged, `demo_item` identical. After `DELETE FROM demo_item` the same command rebuilt all 6 rows. `--since 2026-10-08` reparsed 0 and `--since 2026-10-07` all 8: the blobs were fetched 2026-10-08 00:22 UTC = 10-07 ET, so `--since` reasons in New York dates. With another process holding the DB, `USFIN_LOCK_WAIT=1 usfin reparse _demo` exited 1 after ~1 s with `database busy — …`. Plan amended (Jobs): `Job.versioned` tables, one-transaction all-or-nothing reparse with `ReparseFailed`, `NetworkDisabled` transport, no `job_run` and no watermark move on reparse, pruned rows keep their derived history, depth-first chain run once per chain, failed child does not stop siblings, `usfin run` exits 1 if a chained run failed. |
 | S7 Fiscal Data client | todo | | | | |
 | S8 Fiscal Data registry job | todo | | | | |
 | S9 Alerts | todo | | | | |
