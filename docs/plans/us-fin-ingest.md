@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S35 done — S18 blocked (FRED_API_KEY) — next: close
+Status: done — 2026-10-08 (S18 blocked: FRED_API_KEY)
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -1814,3 +1814,31 @@ Done when: each month has exactly one value per classification, plotted without 
 | S37 Fix: Monthly Treasury Statement as true monthly series | done | 2026-10-08 | a530dd1 | 7 new (test_fiscal_mts, from two real consecutive releases 2026-07-31 / 2026-08-31 recorded with `filter=record_date:eq:` and trimmed to 8–9 lines each: repo registry derives `mts_monthly`, unknown derived name is a ConfigError, one row per month with headers and Year-to-Date lines excluded and prior-year June mapped to June 2025, the August release revising July is a new value with the first print kept, repeat run and reparse leave the view unchanged, value_jump at 0.001 % fires only for August on `fd_mts_monthly`, the browser lists and plots the series one point per month); 2 amended in test_fiscal_job (the table list includes the view; the reparse test drops it as a VIEW); suite 634 passed | Red: all 7 failed for the reason (no `Dataset.derived`, no `fd_mts_monthly`, Observed still on `fd_mts_table_1` by `line_code_nbr`, no index link). On `data/usfin.duckdb` at 04:15 ET 10-08: `usfin run fiscal` `#54 ok rows 0` (6.7 s; `auction_xcheck #55` chained ok; it raised `zero_new_rows` for DTS and Debt to the Penny because the day's first run came before their 16:00 publication — not this slice), `usfin reparse fiscal` 70 raw responses, rows 0, 3.2 s. `fd_mts_monthly`: 155 rows, 155 distinct months 2013-10-31..2026-08-31, no gap; 138 months have `first_release_date` = `record_date` (one current-month line per release); 91 months revised after first print. **FY 2026** (Oct 2025–Aug 2026, 11 months): deficit sum 1 965 591 017 473.53 = Treasury's Year-to-Date line 280 in the 2026-08-31 release to the cent (receipts 4 845 452 239 722.57 and outlays 6 811 043 257 196.10 match too); first prints alone give 1 965 627 820 453.44 (+36.8 m). Every fiscal year 2014–2025 also sums to its last published Year-to-Date exactly. Jumps > 100 % over the year to 2026-10: 5 on the monthly series, all real swings (2025-10, 2026-02, -04, -05, -07). `usfin serve` (then stopped, port 8660 free): `/series` 27 ms lists `mts_monthly` (155 rows) after `mts_table_1` (3 117); `/series/fiscal/mts_monthly` 200 in 31 ms, no picker, one SVG "155 values, low −308.2 bn, high 864.1 bn", no `<script>`; CSV 155 rows, no repeated month, July 2026 432 285 727 964.60 (first print 432 307 874 621.48); `?field=first_dfct_sur_amt` 200. Plan amended: How › Treasury Fiscal Data (S37: the rule and evidence, `fd_mts_monthly`, `derived:`), How › Web UI (S37 note), the S37 slice entry ("current-month line only, prior-year excluded" was wrong — later releases, prior-year block included, revise months; the newest release's value sums to Treasury's totals, first print kept beside it). |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
 - After S32 (user, 2026-10-08): MTS table 1 is derived into true monthly series (S37) rather than plotted/alerted by line position.
+
+## Close
+
+2026-10-08, branch tip after S35: `uv run ruff check .` clean, `uv run pytest -q` 702 passed, `uv build -q` ok, tree clean, pushed to `origin feat/us-fin-ingest`.
+
+| Criterion | Covered by | Verdict |
+|---|---|---|
+| C1 Raw first | S2, S3, S6 (+ every source's reparse run) | met |
+| C2 Idempotent | S8, S12, S13, S16, S19–S25, S27, S29–S30 (second runs rows 0, reparse identical) | met |
+| C3 Watermark + lookback | S5, S8, S12, S16, S23 (window min(watermark, today−7d)) | met |
+| C4 Point-in-time | S16 (`bls_as_of`), S21 (`xbrl_as_of`) | met from first fetch; pre-history needs S18 (blocked) |
+| C5 Polite fetching | S3, S19, S22 (block → skipped), S35 (refused HEAD), S36 | met |
+| C6 Calendars | S4, S10, S17 | met in tests; no scheduled fire observed live yet (S35 used run-now) |
+| C7 Resume / catch-up | S5, S10 | met in tests (fake clock); not yet observed after a real sleep |
+| C8 Alerts | S9, S10 (`db_locked`), S14, S17, S35 (publication-time gate) | met |
+| C9 Safe symbol history | S29, S30 | met |
+| C10 Ticker join | S19, S31 (non-ETF 99.8 %) | met |
+| C11 UI | S11, S32, S33, S34 | met |
+| C12 Gate | every slice; final run above | met |
+| C13 Filing documents | S24, S25 | met |
+| C14 Filing completeness | S22, S23 (6 live days exact) | met |
+| C15 Auction cross-check | S14 (7 894 matched, mismatch test) | met |
+| C16 Schema drift | S8, S12 | met |
+| C17 Bulk + retention | S26, S27, S35 | met (full load 122.7 M facts, 6.6 M filings) |
+| C18 Ops | S35 | met |
+
+Open: S18 blocked until `FRED_API_KEY` is in `.env` (`/plan-build docs/plans/us-fin-ingest.md --slice S18`). Alerts #3/#4 (pre-publication `zero_new_rows`, before S35's gate) left open for the user to ack.
+
