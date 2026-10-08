@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Database busy{% endblock %}
+{% block content %}
+<h1>Database busy</h1>
+<p class="notice bad">{{ message }}.</p>
+<p class="muted">Another process (a job run from a shell, or an analysis session) has the DuckDB
+file open. Close it, or wait for it to finish, then reload this page.</p>
+<details><summary>Details</summary><pre>{{ error }}</pre></details>
+{% endblock %}

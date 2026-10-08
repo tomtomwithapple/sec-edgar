@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head">
+  <h1>Jobs</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+{% if not scheduler_running %}<p class="notice warn">Scheduler is stopped: run-now requests wait in the queue.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Job</th><th>Schedule</th><th>Last run</th><th class="num">Rows</th><th>Watermarks</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows %}
+    <tr>
+      <td class="name">{{ row.job }}</td>
+      <td>
+        {% if row.cron %}<code>{{ row.cron }}</code> <span class="muted">{{ row.calendar }}</span>
+        {% if row.next_fire %}<br><span class="muted">next {{ row.next_fire.strftime("%a %Y-%m-%d %H:%M") }} ET</span>{% endif %}
+        {% else %}<span class="muted">not scheduled</span>{% endif %}
+      </td>
+      <td>
+        {% if row.status %}
+        <span class="status status-{{ row.status }}">{{ row.status }}</span>
+        <span class="muted">#{{ row.last_run_id }} ({{ row.trigger }})</span><br>
+        <span class="muted">{{ row.started_at | cell }}{% if row.finished_at %} → {{ row.finished_at.strftime("%H:%M:%S") }}Z{% endif %}</span>
+        {% if row.error %}<pre class="error">{{ row.error }}</pre>{% endif %}
+        {% else %}<span class="muted">never run</span>{% endif %}
+      </td>
+      <td class="num">{{ row.rows_upserted | cell }}</td>
+      <td>
+        {% for key, value, updated_at in row.marks %}
+        <div><code>{{ key }} = {{ value }}</code></div>
+        {% else %}<span class="muted">none</span>{% endfor %}
+      </td>
+      <td>
+        <form action="/api/jobs/{{ row.job }}/run" method="post"><button type="submit">Run now</button></form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

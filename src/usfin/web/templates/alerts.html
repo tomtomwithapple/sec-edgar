@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head">
+  <h1>Alerts</h1>
+  {% if include_acked %}<a href="/alerts">Open only</a>{% else %}<a href="/alerts?all=1">Include acknowledged</a>{% endif %}
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+{% if not table.rows %}
+<p class="muted">{{ "no alerts" if include_acked else "no open alerts" }}</p>
+{% else %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th class="num">#</th><th>Raised</th><th>Job</th><th>Rule</th><th>Subject</th><th>Detail</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows %}
+    <tr{% if row.acknowledged_at %} class="acked"{% endif %}>
+      <td class="num">{{ row.id }}</td>
+      <td>{{ row.raised_on | cell }}<br><span class="muted">{{ row.raised_at | cell }}</span></td>
+      <td class="name">{{ row.job }}</td>
+      <td><span class="rule">{{ row.rule }}</span></td>
+      <td class="wrap">{{ row.subject }}</td>
+      <td class="wrap"><code>{{ row.detail | cell }}</code></td>
+      <td>
+        {% if row.acknowledged_at %}<span class="muted">acknowledged {{ row.acknowledged_at | cell }}</span>
+        {% else %}<form action="/api/alerts/{{ row.id }}/ack" method="post"><button type="submit">Ack</button></form>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
