@@ -74,7 +74,10 @@ When this is done, these are true (each one is covered by at least one slice's t
   is dropped.
 - **C17 Bulk + retention.** EDGAR bulk ZIPs load member by member without extracting to disk; the
   weekly reconcile re-parses only members whose CRC changed; `usfin raw prune` keeps the last 2
-  blobs per bulk dataset and marks older `raw_response` rows `pruned_at`.
+  blobs per bulk dataset and marks older `raw_response` rows `pruned_at`. A bulk download or
+  reconcile that would leave less than `USFIN_MIN_FREE_GB` free on the raw or DB volume does not
+  start: it records a `skipped` run and raises `disk_low`. The full load runs only after a
+  sample run has projected its size and the projection fits under that guard.
 - **C18 Ops.** `usfin doctor` reports env vars, config, DB path and whether another process holds
   the DB lock, raw dir size and free disk; the launchd plist example passes `plutil -lint`.
 
@@ -226,7 +229,8 @@ hand-built SVG). No `python-multipart`: every POST endpoint takes only path para
 - Secrets and paths only via env / `.env` (see `.env.example`): `SEC_USER_AGENT` (required for
   EDGAR; the user sets it), `BLS_API_KEY` (optional), `FRED_API_KEY` (ALFRED slice only),
   `ALERT_WEBHOOK_URL` (optional), `USFIN_DB` (default `data/usfin.duckdb`), `USFIN_RAW`
-  (default `raw/`), `USFIN_CONFIG` (default `config/`), `USFIN_LOCK_WAIT` (seconds, default 600).
+  (default `raw/`), `USFIN_CONFIG` (default `config/`), `USFIN_LOCK_WAIT` (seconds, default 600),
+  `USFIN_MIN_FREE_GB` (default 10; free-disk floor for bulk downloads).
 - Non-SEC hosts get `User-Agent: usfin/<version> (+https://github.com/tomtomtomdev/sec-edgar)`.
 - Commit style follows the sibling repos: `S<n>: <what the slice found>`; plan-only commits
   `plan(us-fin-ingest): …`.
@@ -504,6 +508,21 @@ zero-padded in URLs, stored as BIGINT.
   run uses `--limit`; the full load is an operation documented in README with its measured time
   and DB size; if it exceeds what this Mac handles comfortably, that is reported, not worked
   around.
+  **Free-disk guard (added 2026-10-08 at the user's request; the Mac had 22 GiB free of 228).**
+  Before any bulk download (`usfin edgar backfill`, job `edgar_bulk`) the code reads the ZIP's
+  `Content-Length` (HEAD request) and `shutil.disk_usage` of the `USFIN_RAW` and `USFIN_DB`
+  volumes; if free − ZIP size (+ projected DB growth, when known) < `USFIN_MIN_FREE_GB`
+  (default 10), it does not download: the CLI exits 1 with the numbers, the job records
+  `skipped` and raises `disk_low` (subject = dataset). The guard is re-checked every 1 000
+  parsed members during a full load and stops cleanly (committed members stay, CRCs make the
+  next run resume) if free space falls below the floor.
+  **Measure before the full load.** The S26 sample run (`--limit 200` per dataset) records, in
+  `edgar_bulk_estimate(dataset, measured_at, zip_bytes, members_total, members_sampled,
+  db_bytes_before, db_bytes_after, rows_inserted, seconds)`, and `usfin edgar backfill --estimate`
+  prints the projection: `projected_db_growth = (db_bytes_after − db_bytes_before) /
+  members_sampled × members_total` and the time likewise. S27 runs the full load only when ZIP
+  sizes + projected growth fit under the guard; otherwise it reports the numbers and stops as a
+  block for the user (move `USFIN_RAW`/`USFIN_DB`, keep 1 ZIP, or narrow scope).
 - Frames (raw dataset `edgar_frames`): `data.sec.gov/api/xbrl/frames/{taxonomy}/{tag}/{unit}/{period}.json`
   on demand → `frames_cache(key PK, fetched_at, raw_id)`, TTL 24 h; never written to `xbrl_fact`.
 - Concept map `config/concepts.yaml` (e.g. `revenue: [Revenues,
@@ -556,7 +575,7 @@ SVG line chart; `?as_of=` for BLS), `/edgar/{cik}` (filings, key facts via conce
 `/symbols/unmatched`. Every table view has `?format=csv`. Bound to 127.0.0.1:8660.
 
 **Ops (C18).** `usfin doctor` (env, config files present, DB path, lock state, raw size, free
-disk). `deploy/com.tuntun.usfin.serve.plist.example` runs `uv run usfin serve` with
+disk vs `USFIN_MIN_FREE_GB`, and the latest bulk projection from `edgar_bulk_estimate`). `deploy/com.tuntun.usfin.serve.plist.example` runs `uv run usfin serve` with
 `WorkingDirectory` set to the repo (so `config/` and `.env` resolve) and `KeepAlive`. README:
 setup, `.env`, first backfills, schedule, analysis access between jobs, the full bulk load's
 measured time and size.
@@ -566,8 +585,9 @@ measured time and size.
   by the limiter/UA/403 tests and the first live EDGAR run.
 - *Schema drift* (Fiscal Data, TreasuryDirect) → raw store, add-column / payload, `schema_drift`
   alert; retired by the TreasuryDirect 2010-vs-current fixture test and the add-column test.
-- *Bulk size* → streamed members, `us-gaap` + `dei` only, `--limit` in slices, prune keeps 2;
-  full load measured once and recorded in README.
+- *Bulk size / low disk* (22 GiB free on 2026-10-08) → streamed members, `us-gaap` + `dei` only,
+  `--limit` in slices, prune keeps 2, free-disk guard with `disk_low` alert, sample-based
+  projection before the full load; retired by the guard tests (S26, S27) and the S26 projection.
 - *DuckDB single-process lock* → open per use, lock wait, `DatabaseLocked` surfaced as a failed
   run + `db_locked` alert; retired by a two-process contention test.
 - *Mac asleep at fire time* → 1 h misfire grace + startup catch-up; retired by a catch-up test
@@ -815,17 +835,17 @@ Done when: C13 13D/G half covered.
 
 ### S26 — EDGAR bulk backfill
 Depends on: S21, S2
-Red: `tests/test_edgar_bulk.py` — a small fixture ZIP (2 members each) streams to raw as `.zip`; members parsed in place with the per-CIK parsers; `edgar_bulk_member` CRCs stored; `--limit`, `--cik`.
-Green: `sources/edgar/bulk.py`, `usfin edgar backfill {submissions|companyfacts}`.
-Run: live download of both ZIPs, `--limit 200` each; record download sizes and parse rate.
-Done when: C17 streaming half covered.
+Red: `tests/test_edgar_bulk.py` — a small fixture ZIP (2 members each) streams to raw as `.zip`; members parsed in place with the per-CIK parsers; `edgar_bulk_member` CRCs stored; `--limit`, `--cik`. `tests/test_disk_guard.py` — with `disk_usage` patched: free − Content-Length below `USFIN_MIN_FREE_GB` → no GET sent, CLI exits 1 with the numbers; the floor crossed mid-load stops after the current member with earlier members committed; the sample run writes an `edgar_bulk_estimate` row and `--estimate` prints the projected growth from it.
+Green: `sources/edgar/bulk.py`, `usfin edgar backfill {submissions|companyfacts} [--estimate]`, guard + estimate table (How › SEC EDGAR › Free-disk guard, Measure before the full load).
+Run: check free disk, then live download of both ZIPs (only if the guard allows), `--limit 200` each; record ZIP sizes, parse rate and the projected full-load DB growth and time in the row.
+Done when: C17 streaming half and the guard covered; a projection for both datasets is recorded.
 
 ### S27 — Weekly bulk reconcile and prune
 Depends on: S26
-Red: `tests/test_edgar_bulk_reconcile.py` — second ZIP with one changed member → only that member reparsed; prune keeps 2 per dataset after the job.
-Green: job `edgar_bulk`, schedule Sun 03:00 any.
-Run: `uv run usfin run edgar_bulk` live with `--limit` env cap; then the **full** companyfacts + submissions load once — record time and DB size in README and here.
-Done when: C17 covered; full-load numbers recorded (or the limit reported if this Mac can't).
+Red: `tests/test_edgar_bulk_reconcile.py` — second ZIP with one changed member → only that member reparsed; prune keeps 2 per dataset after the job; low free disk → `skipped` run + one `disk_low` alert, nothing downloaded.
+Green: job `edgar_bulk`, schedule Sun 03:00 any, guard wired into the job.
+Run: `uv run usfin run edgar_bulk` live with `--limit` env cap; then, **only if S26's projection fits under the guard**, the **full** companyfacts + submissions load once — record time and DB size in README and here. If it does not fit, stop and report it as a block with the numbers.
+Done when: C17 covered; full-load numbers recorded, or the block reported with the projection.
 
 ### S28 — Frames and concept map
 Depends on: S21
