@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head">
+  <h1>Series</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+{% set groups = [("bls", "BLS series"), ("fiscal", "Treasury Fiscal Data"), ("auctions", "Treasury auctions")] %}
+{% for source, heading in groups %}
+<h2>{{ heading }}</h2>
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Series</th><th>Title</th><th class="num">Rows</th><th>First</th><th>Last</th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows if row.source == source %}
+    <tr>
+      <td class="name"><a href="{{ row.href }}">{{ row.id }}</a></td>
+      <td class="wrap">{{ row.title }}</td>
+      <td class="num">{{ row.rows | cell }}</td>
+      <td>{{ row.first | cell }}</td>
+      <td>{{ row.last | cell }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">nothing stored yet</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endfor %}
+<p class="muted">BLS rows are months stored (current version); Fiscal Data rows are table rows across every series in the dataset.</p>
+{% endblock %}

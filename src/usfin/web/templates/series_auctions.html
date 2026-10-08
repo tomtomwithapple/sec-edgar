@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › {% if picked %}<a href="/series/auctions">Auctions</a> › {{ label }}{% else %}Auctions{% endif %}</p>
+<div class="head">
+  <h1>{% if picked %}{{ label }}{% else %}Treasury auctions{% endif %}</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="sub muted">From TreasuryDirect (<code>tsy_security</code>), by security type, term as auctioned and kind; a reopening's term (e.g. 9-Year 10-Month) is its own series.</p>
+{% if not picked %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Type</th><th>Term</th><th>Kind</th><th class="num">Auctions</th><th>First</th><th>Last</th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows %}
+    <tr>
+      <td>{{ row.security_type }}</td>
+      <td class="name"><a href="{{ row.href }}">{{ row.security_term }}</a></td>
+      <td>{{ row.kind }}</td>
+      <td class="num">{{ row.auctions }}</td>
+      <td>{{ row.first | cell }}</td>
+      <td>{{ row.last | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<nav class="pick" aria-label="Field">
+  <span class="muted">Field:</span>
+  {% for f in fields %}<a href="{{ field_href(f) }}"{% if f == field %} aria-current="true"{% endif %}>{{ f }}</a>{% endfor %}
+</nav>
+{% if chart %}<figure class="chart-box">{{ chart | safe }}</figure>{% elif table.rows %}<p class="notice warn">{{ field }} has no values for {{ label }}.</p>{% else %}<p class="notice warn">no auctions for {{ label }}.</p>{% endif %}
+{% if table.rows | length > html_rows %}<p class="muted">Newest {{ html_rows }} of {{ table.rows | length }} auctions; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Auction</th><th>CUSIP</th><th>Status</th>{% for f in fields %}<th class="num">{{ f }}</th>{% endfor %}<th>Issue</th><th>Maturity</th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows[:html_rows] %}
+    <tr>
+      <td>{{ row.auction_date | cell }}</td>
+      <td><code>{{ row.cusip }}</code></td>
+      <td>{{ row.status }}</td>
+      {% for f in fields %}<td class="num{% if f == field %} hl{% endif %}">{{ row[f] | cell }}</td>{% endfor %}
+      <td>{{ row.issue_date | cell }}</td>
+      <td>{{ row.maturity_date | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

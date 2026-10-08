@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › BLS</p>
+<div class="head">
+  <h1>{{ meta.series_id }}</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="sub">{{ meta.title }}{% if meta.units %} <span class="muted">· {{ meta.units }}</span>{% endif %}</p>
+<form class="pick" method="get" action="/series/bls/{{ meta.series_id }}">
+  <label for="as_of">As of (New York date)</label>
+  <input id="as_of" name="as_of" type="date" value="{{ as_of or '' }}">
+  <button type="submit">Show</button>
+  {% if as_of %}<a href="/series/bls/{{ meta.series_id }}">Latest</a>{% endif %}
+</form>
+<p class="muted">{% if as_of %}Values as they were known at 23:59:59 New York on {{ as_of }} (point in time).{% else %}Latest published values.{% endif %}</p>
+{% if not table.rows %}
+<p class="notice warn">no values known as of {{ as_of or "now" }}{% if first_seen %} — the oldest stored version was first seen {{ first_seen | cell }}{% else %} — nothing stored for this series yet{% endif %}.</p>
+{% else %}
+{% if chart %}<figure class="chart-box">{{ chart | safe }}</figure>{% endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Period</th><th class="num">Value</th><th class="num">Versions</th><th>First seen</th><th>Source</th><th>Footnotes</th></tr>
+  </thead>
+  <tbody>
+  {% for row in rows_newest %}
+    <tr>
+      <td>{{ row.year }} {{ row.period }}</td>
+      <td class="num">{% if row.value is none %}<span class="muted">no value</span>{% else %}{{ row.value }}{% endif %}</td>
+      <td class="num">{{ row.versions }}</td>
+      <td>{{ row.first_seen_at | cell }}</td>
+      <td>{{ row.source }}</td>
+      <td class="wrap">{{ row.notes | join("; ") }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

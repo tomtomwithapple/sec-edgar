@@ -138,3 +138,47 @@ button:hover { border-color: var(--accent); }
   body { font-size: 14px; }
   th, td { padding: 6px 8px; }
 }
+
+/* series browser */
+h2 { margin: 18px 0 8px; font-size: 1.1rem; }
+.crumbs { margin: 6px 0 0; font-size: 0.9em; color: var(--muted); }
+.sub { margin: 0 0 10px; }
+.pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
+.pick a[aria-current] { color: var(--fg); font-weight: 600; text-decoration: none; }
+input[type="date"] {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+td.hl { font-weight: 600; }
+.chart-box {
+  margin: 10px 0 14px;
+  padding: 8px 4px 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.chart { display: block; width: 100%; height: auto; }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .axis { stroke: var(--muted); stroke-width: 1; }
+.chart .tick, .chart .label { fill: var(--muted); font: 12px var(--font); }
+.chart .label { font-weight: 600; }
+.chart .line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.chart .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.chart .hit { fill: transparent; }
+.chart .hit:hover { fill: var(--accent); fill-opacity: 0.35; }
+
+@media (max-width: 600px) {
+  .chart .tick, .chart .label { font-size: 20px; }
+  .chart .label.y { display: none; }
+}

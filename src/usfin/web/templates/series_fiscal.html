@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › Fiscal Data{% if picked %} › <a href="/series/fiscal/{{ dataset.name }}">{{ dataset.name }}</a>{% endif %}</p>
+<div class="head">
+  <h1>{{ dataset.name }}{% if picked and pick %}: {{ pick.values() | join(" · ") }}{% endif %}</h1>
+  {% if shape %}<a class="csv" href="{{ csv_href }}">CSV</a>{% endif %}
+</div>
+<p class="sub muted"><code>{{ dataset.endpoint }}</code></p>
+{% if shape is none %}
+<p class="notice warn">{{ dataset.table }} is not loaded yet — run <code>usfin run fiscal</code>.</p>
+{% elif not picked %}
+<p>Pick a series ({{ shape.dims | join(", ") }}):</p>
+<div class="scroll">
+<table>
+  <thead>
+    <tr>{% for d in shape.dims %}<th>{{ d }}</th>{% endfor %}{% if shape.label %}<th>{{ shape.label }}</th>{% endif %}<th class="num">Rows</th><th>First</th><th>Last</th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows %}
+    <tr>
+      {% for d in shape.dims %}<td class="name">{% if loop.first %}<a href="{{ row.href }}">{{ row[d] }}</a>{% else %}{{ row[d] }}{% endif %}</td>{% endfor %}
+      {% if shape.label %}<td class="wrap">{{ row[shape.label] | cell }}</td>{% endif %}
+      <td class="num">{{ row.rows }}</td>
+      <td>{{ row.first | cell }}</td>
+      <td>{{ row.last | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<nav class="pick" aria-label="Field">
+  <span class="muted">Field:</span>
+  {% for f in shape.fields %}<a href="{{ field_href(f) }}"{% if f == field %} aria-current="true"{% endif %}>{{ f }}</a>{% endfor %}
+</nav>
+{% if chart %}<figure class="chart-box">{{ chart | safe }}</figure>{% else %}<p class="notice warn">{{ field }} has no values in this series.</p>{% endif %}
+{% if table.rows | length > html_rows %}<p class="muted">Newest {{ html_rows }} of {{ table.rows | length }} rows; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>{{ shape.date_field }}</th>{% if shape.label %}<th>{{ shape.label }}</th>{% endif %}{% for f in shape.fields %}<th class="num">{{ f }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows[:html_rows] %}
+    <tr>
+      <td>{{ row[shape.date_field] | cell }}</td>
+      {% if shape.label %}<td class="wrap">{{ row[shape.label] | cell }}</td>{% endif %}
+      {% for f in shape.fields %}<td class="num{% if f == field %} hl{% endif %}">{{ row[f] | cell }}</td>{% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

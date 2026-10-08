@@ -14,8 +14,10 @@ an API client gets JSON.
 
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Request
@@ -25,9 +27,13 @@ from fastapi.templating import Jinja2Templates
 
 from usfin import __version__, alerts, jobs, store
 from usfin.scheduler import ET, Scheduler, next_fires
+from usfin.sources import fiscal
+from usfin.web import charts, series
 from usfin.web.tables import Table, cell, csv_href, respond, wants_csv, wants_html
 
 UI_LOCK_WAIT = 5.0
+HTML_ROWS = 500
+"""A series page's HTML table shows the newest this many rows; its CSV has every row."""
 BUSY = "database busy — another process holds the lock"
 HERE = Path(__file__).resolve().parent
 
@@ -55,6 +61,10 @@ ALERT_COLUMNS = (
     "detail",
     "acknowledged_at",
 )
+
+
+def _slug(text: str) -> str:
+    return "".join(c if c.isalnum() else "-" for c in text).strip("-")
 
 
 def make_templates() -> Jinja2Templates:
@@ -152,6 +162,181 @@ def create_app(
             nav="alerts",
             csv_href=csv_href(request),
             include_acked=include_acked,
+        )
+
+    # --- series browser -------------------------------------------------------------------
+
+    @app.get("/series")
+    def series_index(request: Request) -> Response:
+        with db() as con:
+            rows = series.index(con, settings.config_dir)
+        return respond(
+            request,
+            templates,
+            "series_index.html",
+            Table("series", series.INDEX_COLUMNS, rows),
+            title="Series",
+            nav="series",
+            csv_href=csv_href(request),
+        )
+
+    @app.get("/series/bls/{series_id}")
+    def bls_page(series_id: str, request: Request) -> Response:
+        raw_as_of = request.query_params.get("as_of") or None
+        try:
+            as_of = date.fromisoformat(raw_as_of) if raw_as_of else None
+        except ValueError:
+            raise HTTPException(400, f"as_of must be YYYY-MM-DD, got {raw_as_of!r}") from None
+        with db() as con:
+            meta = series.bls_series(con, settings.config_dir, series_id)
+            if meta is None:
+                raise HTTPException(404, f"unknown BLS series {series_id!r}")
+            rows = series.bls_rows(con, meta, as_of)
+            first_seen = series.bls_first_seen(con, series_id) if not rows else None
+        dated = [r for r in rows if r["period_date"] is not None]
+        title = f"{meta.title} ({meta.units})" if meta.units else meta.title
+        chart = charts.line_chart(
+            series.points(dated, "period_date", "number"),
+            title=f"{series_id}: {title}" + (f", as of {as_of}" if as_of else ""),
+            y_label=meta.units or series_id,
+            x_label="Month",
+        )
+        name = f"bls_{series_id}" + (f"_as_of_{as_of}" if as_of else "")
+        return respond(
+            request,
+            templates,
+            "series_bls.html",
+            Table(name, series.BLS_COLUMNS, rows),
+            title=series_id,
+            nav="series",
+            csv_href=csv_href(request),
+            meta=meta,
+            as_of=as_of,
+            first_seen=first_seen,
+            chart=chart,
+            rows_newest=list(reversed(rows)),
+        )
+
+    @app.get("/series/fiscal/{name}")
+    def fiscal_page(name: str, request: Request) -> Response:
+        dataset = fiscal.load_datasets(settings.config_dir).get(name)
+        if dataset is None:
+            raise HTTPException(404, f"unknown Fiscal Data dataset {name!r}")
+        params = request.query_params
+        context = {
+            "title": name,
+            "nav": "series",
+            "dataset": dataset,
+            "csv_href": csv_href(request),
+        }
+        with db() as con:
+            shape = series.fiscal_shape(con, dataset)
+            if shape is None:
+                return respond(
+                    request, templates, "series_fiscal.html", Table(name, ()), shape=None, **context
+                )
+            pick = {d: params[d] for d in shape.dims if d in params}
+            if not pick:
+                pick = shape.default_pick() or {}
+            picked = len(pick) == len(shape.dims)
+            field = params.get("field") or shape.default_field()
+            if picked and field not in shape.fields:
+                raise HTTPException(400, f"{name} has no numeric field {field!r}")
+            if not picked:
+                rows = series.fiscal_series_list(con, shape)
+                for r in rows:
+                    r["href"] = f"/series/fiscal/{name}?" + urlencode({d: r[d] for d in shape.dims})
+                cols = (
+                    *shape.dims,
+                    *([shape.label] if shape.label else []),
+                    "rows",
+                    "first",
+                    "last",
+                )
+                return respond(
+                    request,
+                    templates,
+                    "series_fiscal.html",
+                    Table(f"{name}_series", cols, rows),
+                    shape=shape,
+                    picked=False,
+                    **context,
+                )
+            rows = series.fiscal_rows(con, shape, pick)
+        label = " · ".join(pick.values())
+        chart = charts.line_chart(
+            series.points(rows, shape.date_field, field),
+            title=f"{name}{': ' + label if label else ''}: {field}",
+            y_label=field,
+            x_label=shape.date_field,
+        )
+        cols = [
+            shape.date_field,
+            *shape.dims,
+            *([shape.label] if shape.label else []),
+            *shape.fields,
+        ]
+        stem = "_".join([name, *(_slug(v) for v in pick.values())])
+        return respond(
+            request,
+            templates,
+            "series_fiscal.html",
+            Table(stem, cols, rows),
+            shape=shape,
+            picked=True,
+            pick=pick,
+            field=field,
+            chart=chart,
+            field_href=lambda f: f"/series/fiscal/{name}?" + urlencode({**pick, "field": f}),
+            html_rows=HTML_ROWS,
+            **context,
+        )
+
+    @app.get("/series/auctions")
+    def auctions_page(request: Request) -> Response:
+        params = request.query_params
+        typ, term, kind = params.get("type"), params.get("term"), params.get("kind", "nominal")
+        context = {"title": "Auctions", "nav": "series", "csv_href": csv_href(request)}
+        with db() as con:
+            if not (typ and term):
+                rows = series.auction_series_list(con)
+                for r in rows:
+                    r["href"] = "/series/auctions?" + urlencode(
+                        {"type": r["security_type"], "term": r["security_term"], "kind": r["kind"]}
+                    )
+                return respond(
+                    request,
+                    templates,
+                    "series_auctions.html",
+                    Table("auctions_series", series.AUCTION_LIST_COLUMNS, rows),
+                    picked=False,
+                    **context,
+                )
+            rows = series.auction_rows(con, typ, term, kind)
+        field = params.get("field") or series.auction_default_field(typ, kind)
+        if field not in series.AUCTION_FIELDS:
+            raise HTTPException(400, f"auctions have no field {field!r}")
+        label = f"{term} {typ}" + ("" if kind == "nominal" else f" ({kind})")
+        chart = charts.line_chart(
+            series.points(rows, "auction_date", field),
+            title=f"Treasury auctions, {label}: {field}",
+            y_label=field,
+            x_label="Auction date",
+        )
+        base = {"type": typ, "term": term, "kind": kind}
+        return respond(
+            request,
+            templates,
+            "series_auctions.html",
+            Table(f"auctions_{_slug(typ)}_{_slug(term)}_{kind}", series.AUCTION_COLUMNS, rows),
+            picked=True,
+            label=label,
+            field=field,
+            fields=series.AUCTION_FIELDS,
+            chart=chart,
+            field_href=lambda f: "/series/auctions?" + urlencode({**base, "field": f}),
+            html_rows=HTML_ROWS,
+            **context,
         )
 
     # --- API ------------------------------------------------------------------------------
