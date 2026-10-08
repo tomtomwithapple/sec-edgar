@@ -21,6 +21,9 @@ registers it: `bls_release` = the release days of the key's series in the BLS ca
 
 - `zero_new_rows`: on a due day, no row of the key dated after the key's watermark *as it stood
   before the job's first run that New York day* (so a repeat run the same day does not fire).
+  `{after: "HH:MM"}` (New York; S35) judges it only from that time on, the key's publication
+  time: a manual or catch-up run before it (fiscal at 04:15 ET, S37) checks nothing, and a later
+  run still compares with the day's first baseline.
 - `stale_watermark(n)`: more than `n` due days fall after the key's watermark, through today.
 - `value_jump(pct)`: a row dated after that same baseline moved more than `pct` % from the
   previous row of its series (flag only; the row is stored).
@@ -36,9 +39,10 @@ once per (job, rule, subject, New York date); each newly stored alert is POSTed 
 
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -208,7 +212,24 @@ def _params(rule: str, value: Any, where: str) -> dict[str, Any]:
     missing = [p for p in _REQUIRED.get(rule, ()) if p not in params]
     if missing:
         raise ConfigError(f"{where}: {rule} needs {', '.join(missing)}")
+    if "after" in params:
+        if rule != "zero_new_rows":
+            raise ConfigError(f"{where}: only zero_new_rows takes 'after', not {rule}")
+        if _after_time(params["after"]) is None:
+            raise ConfigError(
+                f"{where}: zero_new_rows after must be HH:MM (New York), got {params['after']!r}"
+            )
     return params
+
+
+def _after_time(value: Any) -> time | None:
+    """`HH:MM` (24 h) as a time, or None when it is not one."""
+    if not isinstance(value, str) or not re.fullmatch(r"\d{2}:\d{2}", value):
+        return None
+    try:
+        return time.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def load_rules(config_dir: Path | str) -> dict[str, JobRules]:
@@ -245,8 +266,12 @@ def _utc_naive(dt: datetime) -> datetime:
     return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
 
 
+def _et(dt: datetime) -> datetime:
+    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).astimezone(ET)
+
+
 def _et_date(dt: datetime) -> date:
-    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).astimezone(ET).date()
+    return _et(dt).date()
 
 
 def raise_alert(
@@ -412,6 +437,9 @@ class _Check:
 def _zero_new_rows(c: _Check, params: Mapping[str, Any]) -> None:
     if c.baseline is None or not c.table_ready() or not c.due.is_due(c.cals, c.today):
         return
+    after = _after_time(params.get("after"))
+    if after is not None and _et(c.now).time() < after:
+        return  # before the key's publication time: nothing can be judged yet (S35)
     spec = c.spec
     where, args = _where(spec.match)
     newer = c.con.execute(

@@ -255,6 +255,31 @@ def test_sec_403_sets_block_window_and_later_sec_calls_send_nothing(con, make_cl
 
 
 @respx.mock
+def test_a_sec_403_to_a_head_is_archived_and_returned_with_no_block(con, make_client, clock):
+    # S35: SEC refused a HEAD on an Archives file whose GET worked (S36); a refused HEAD is a
+    # method refusal, not a rate limit, so the caller decides (a GET 403 still blocks)
+    block = http.SecBlock(clock=clock)
+    respx.head(SEC).respond(403, text="denied")
+    raw_id, resp = make_client(sec_block=block).request(
+        "HEAD", SEC, source="edgar", dataset="edgar_bulk_head"
+    )
+    assert resp.status_code == 403 and _row(con, raw_id)["http_status"] == 403
+    assert not block.blocked()
+
+
+@respx.mock
+def test_inspect_refusing_the_final_response_archives_nothing(con, make_client):
+    respx.get(SEC).respond(200, content=b"x" * 5000)
+
+    def refuse(response):
+        raise RuntimeError(f"too big: {response.headers['Content-Length']}")
+
+    with pytest.raises(RuntimeError, match="too big: 5000"):
+        make_client().get(SEC, source="edgar", dataset="d", stream=True, inspect=refuse)
+    assert _rows(con) == 0
+
+
+@respx.mock
 def test_non_sec_403_is_returned_not_blocking(con, make_client):
     respx.get(FD).respond(403)
     raw_id, resp = make_client().get(FD, source="fiscal", dataset="d")

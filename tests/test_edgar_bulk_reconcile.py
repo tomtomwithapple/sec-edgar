@@ -136,7 +136,8 @@ def test_low_free_disk_skips_the_run_raises_one_disk_low_alert_and_downloads_not
 def test_the_second_download_is_guarded_too(settings, sec, disk):
     # room for companyfacts.zip but, once it is stored, not for submissions.zip as well
     cf, subs = len(sec.bodies["companyfacts.zip"]), len(sec.bodies["submissions.zip"])
-    disk.script = [10 * GIB + cf, 10 * GIB + cf, 10 * GIB + subs - 1, 10 * GIB + subs - 1]
+    # (raw, db) for the HEAD guard and again for the GET's Content-Length (S35), per ZIP
+    disk.script = [10 * GIB + cf] * 4 + [10 * GIB + subs - 1] * 2
     result = _run(settings)
     assert result.status == "skipped"
     assert sec.requests == ["HEAD companyfacts.zip", "GET companyfacts.zip", "HEAD submissions.zip"]
@@ -193,3 +194,33 @@ def test_edgar_bulk_is_scheduled_sunday_0300_any_day():
 
 def test_edgar_bulk_is_registered():
     assert "edgar_bulk" in jobs.load_registry().names()
+
+
+def test_a_refused_head_sizes_by_a_ranged_get_and_the_job_runs_ok(settings, sec, disk):
+    _company(settings, 320193, "AAPL")
+    sec.head_status = 403  # as SEC answered a HEAD on Archives in S36
+    result = _run(settings)
+    assert result.status == "ok", result.error
+    assert sec.requests == [
+        "HEAD companyfacts.zip", "GET companyfacts.zip bytes=0-0", "GET companyfacts.zip",
+        "HEAD submissions.zip", "GET submissions.zip bytes=0-0", "GET submissions.zip",
+    ]  # fmt: skip
+    assert not fixtures.http.SEC_BLOCK.blocked()
+
+
+def test_a_streamed_zip_larger_than_announced_by_head_is_guarded_before_writing(
+    settings, sec, disk
+):
+    size = len(sec.bodies["companyfacts.zip"])
+    disk.free = 10 * GIB + size + GIB // 2
+    sec.get_length = size + GIB
+    result = _run(settings)
+    assert result.status == "skipped"
+    assert "disk low" in result.error
+    assert sec.requests == ["HEAD companyfacts.zip", "GET companyfacts.zip"]
+    assert _query(settings, "SELECT rule, subject FROM alert") == [
+        ("disk_low", "bulk_companyfacts")
+    ]
+    assert _query(settings, "SELECT count(*) FROM raw_response WHERE dataset LIKE 'bulk_%'") == [
+        (0,)
+    ]

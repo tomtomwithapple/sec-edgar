@@ -52,12 +52,83 @@ def test_exactly_the_floor_left_is_allowed(settings, sec, disk, cli_env):
     assert out.exit_code == 0, out.output
 
 
-def test_a_head_without_content_length_downloads_nothing(settings, sec, disk, cli_env):
+def test_a_head_without_content_length_downloads_nothing_if_the_range_is_ignored(
+    settings, sec, disk, cli_env
+):
+    # S35: a HEAD without a size falls back to a 1-byte ranged GET; a server that ignores the
+    # Range (200, whole body) is refused before its body is read — nothing is written
     sec.content_length = False
+    sec.ranges = False
     out = _backfill("submissions")
     assert out.exit_code == 1
-    assert sec.requests == ["HEAD submissions.zip"]
-    assert "Content-Length" in out.output
+    assert sec.requests == ["HEAD submissions.zip", "GET submissions.zip bytes=0-0"]
+    assert "Content-Length" in out.output and "Range" in out.output
+    assert _query(settings, "SELECT count(*) FROM raw_response WHERE dataset LIKE 'bulk_%'") == [
+        (0,)
+    ]
+
+
+# --- HEAD refused (S35: S36 saw SEC answer 403 to a HEAD on Archives) ------------------------
+
+
+def _blocked() -> bool:
+    return fixtures.http.SEC_BLOCK.blocked()
+
+
+def test_a_refused_head_opens_no_sec_block_and_a_ranged_get_sizes_the_zip(
+    settings, sec, disk, cli_env
+):
+    sec.head_status = 403
+    out = _backfill("companyfacts", "--check")
+    assert out.exit_code == 0, out.output
+    assert sec.requests == ["HEAD companyfacts.zip", "GET companyfacts.zip bytes=0-0"]
+    size = len(sec.bodies["companyfacts.zip"])
+    assert f"zip {size} bytes" in out.output and "fits" in out.output
+    assert not _blocked()
+    # both answers are archived (C1), as sizing requests, not as a bulk ZIP
+    assert _query(
+        settings, "SELECT http_status, bytes FROM raw_response ORDER BY id"
+    ) == [(403, 0), (206, 1)]
+    assert _query(settings, "SELECT DISTINCT dataset FROM raw_response") == [("edgar_bulk_head",)]
+
+
+def test_a_refused_head_still_guards_the_download(settings, sec, disk, cli_env):
+    sec.head_status = 403
+    size = len(sec.bodies["companyfacts.zip"])
+    disk.free = 10 * GIB + size - 1  # the ranged GET's size does not fit
+    out = _backfill("companyfacts")
+    assert out.exit_code == 1
+    assert sec.requests == ["HEAD companyfacts.zip", "GET companyfacts.zip bytes=0-0"]
+    assert f"zip {size} bytes" in out.output and "not downloading" in out.output
+    assert not _blocked()
+
+
+def test_a_refused_head_and_a_refused_ranged_get_block_sec_and_download_nothing(
+    settings, sec, disk, cli_env
+):
+    sec.head_status = 403
+    sec.range_status = 403  # SEC refusing GETs too is a real block (C5)
+    out = _backfill("companyfacts")
+    assert out.exit_code == 1
+    assert sec.requests == ["HEAD companyfacts.zip", "GET companyfacts.zip bytes=0-0"]
+    assert _blocked()
+
+
+def test_the_streamed_get_size_is_checked_before_anything_is_written(
+    settings, sec, disk, cli_env
+):
+    # HEAD said the ZIP fits; the GET announces a ZIP 1 GiB larger, which does not
+    size = len(sec.bodies["companyfacts.zip"])
+    disk.free = 10 * GIB + size + GIB // 2
+    sec.get_length = size + GIB
+    out = _backfill("companyfacts")
+    assert out.exit_code == 1
+    assert sec.requests == ["HEAD companyfacts.zip", "GET companyfacts.zip"]
+    assert "not downloading" in out.output and f"zip {size + GIB} bytes" in out.output
+    assert _query(settings, "SELECT count(*) FROM raw_response WHERE dataset LIKE 'bulk_%'") == [
+        (0,)
+    ]
+    assert not list(settings.raw_dir.rglob("*.zip"))
 
 
 def test_check_only_heads_and_prints_the_verdict(settings, sec, disk, cli_env):
@@ -71,8 +142,9 @@ def test_floor_crossed_mid_load_stops_after_the_current_member(
     settings, sec, disk, cli_env, monkeypatch
 ):
     monkeypatch.setattr(bulk, "GUARD_EVERY", 1)
-    # HEAD guard (raw, db), then the re-check after member 1 (raw, db) finds the floor crossed
-    disk.script = [18 * GIB, 18 * GIB, 18 * GIB, 9 * GIB]
+    # HEAD guard (raw, db), the GET's Content-Length (raw, db; S35), then the re-check after
+    # member 1 (raw, db) finds the floor crossed
+    disk.script = [18 * GIB] * 5 + [9 * GIB]
     out = _backfill("companyfacts")
     assert out.exit_code == 1
     assert "stopped" in out.output and "rerun to resume" in out.output

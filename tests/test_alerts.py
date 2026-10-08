@@ -250,6 +250,66 @@ def test_zero_new_rows_skips_keys_whose_due_rule_is_none(settings):
     assert _rules(settings, "zero_new_rows") == []
 
 
+def _schedule(settings, text):
+    (settings.config_dir / "schedule.yaml").write_text(text, "utf-8")
+
+
+AFTER = """
+jobs:
+  fake:
+    cron: "0 17 * * *"
+    calendar: federal
+    due: federal
+    alerts:
+      zero_new_rows: {after: "16:00"}
+    keys:
+      late: {zero_new_rows: {after: "18:30"}}
+"""
+
+
+def test_zero_new_rows_waits_for_the_publication_time_so_an_early_run_does_not_fire(settings):
+    # S35: a manual run at 04:15 ET (S37) came before DTS / Debt to the Penny publish (~16:00 ET)
+    _schedule(settings, AFTER)
+    fake = Series({"a": [("2026-10-07", 1.0)], "late": [("2026-10-07", 1.0)]})
+    job = fake.job()
+    _run(settings, job, THU)  # first load
+    _run(settings, job, at("2026-10-09", 8))  # Fri 04:00 ET: nothing new, before 16:00
+    assert _rules(settings, "zero_new_rows") == []
+    _run(settings, job, at("2026-10-09", 21))  # Fri 17:00 ET: still nothing new — now it fires
+    # `late` (per-key 18:30) is still before its time; the baseline is the day's first run's
+    assert _rules(settings, "zero_new_rows") == [("a", date(2026, 10, 9))]
+    _run(settings, job, at("2026-10-09", 23))  # 19:00 ET
+    assert sorted(_rules(settings, "zero_new_rows")) == [
+        ("a", date(2026, 10, 9)), ("late", date(2026, 10, 9))
+    ]  # fmt: skip
+
+
+def test_zero_new_rows_after_the_early_run_compares_to_the_days_first_baseline(settings):
+    _schedule(settings, AFTER)
+    fake = Series({"a": [("2026-10-07", 1.0)]})
+    job = fake.job()
+    _run(settings, job, THU)
+    _run(settings, job, at("2026-10-09", 8))  # 04:00 ET, nothing new
+    fake.items["a"].append(("2026-10-08", 2.0))  # published at 16:00
+    _run(settings, job, at("2026-10-09", 21))
+    assert _rules(settings, "zero_new_rows") == []
+
+
+@pytest.mark.parametrize("bad", ["25:00", "4pm", 1600, "16:60"])
+def test_zero_new_rows_after_must_be_hh_mm(settings, bad):
+    _schedule(settings, f"jobs:\n  fake:\n    calendar: federal\n    alerts:\n"
+                        f"      zero_new_rows: {{after: {bad!r}}}\n")  # fmt: skip
+    with pytest.raises(ConfigError, match="after"):
+        alerts.load_rules(settings.config_dir)
+
+
+def test_the_repo_schedule_judges_zero_new_rows_only_after_each_jobs_publication():
+    rules = alerts.load_rules(REPO_CONFIG)
+    for key in ("dts_operating_cash", "debt_to_penny"):
+        assert rules["fiscal"].params_for(key)["zero_new_rows"]["after"] == "17:00"
+    assert rules["symbols"].params_for("nasdaqlisted")["zero_new_rows"]["after"] == "07:00"
+
+
 # --- stale_watermark ----------------------------------------------------------------------
 
 

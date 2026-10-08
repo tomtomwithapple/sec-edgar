@@ -180,6 +180,24 @@ def serve(
     uvicorn.run(create_app(sched), host=host, port=port)
 
 
+@app.command("doctor")
+def doctor() -> None:
+    """Check env vars (set/unset, never values), config, DB lock, raw size and free disk."""
+    from usfin import doctor as usfin_doctor
+    from usfin.settings import environment
+
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        typer.echo(f"FAIL  settings             {exc}")
+        raise typer.Exit(1) from None
+    checks = usfin_doctor.report(settings, environment())
+    for check in checks:
+        typer.echo(check.line())
+    if any(c.status == "FAIL" for c in checks):
+        raise typer.Exit(1)
+
+
 db_app = typer.Typer(no_args_is_help=True, help="Database: migrations and info.")
 app.add_typer(db_app, name="db")
 
@@ -585,7 +603,14 @@ def edgar_backfill_cmd(
                     raise typer.Exit(1)
                 started = time.monotonic()
                 try:
-                    raw_id = edgar_bulk.download(client, spec)
+                    raw_id = edgar_bulk.download(
+                        client, spec, fits=lambda n: edgar_bulk.guard(
+                            con, settings, spec, n, limit=len(ciks) if ciks else limit
+                        ),
+                    )  # fmt: skip
+                except edgar_bulk.DiskLow as exc:
+                    typer.echo(str(exc), err=True)
+                    raise typer.Exit(1) from None
                 except (usfin_http.HttpError, edgar_bulk.BulkError) as exc:
                     typer.echo(f"error: {exc}", err=True)
                     raise typer.Exit(1) from None

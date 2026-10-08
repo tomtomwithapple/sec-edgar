@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for `usfin serve` (scheduler + web UI on http://127.0.0.1:8660).
+
+  An example: not installed by anything in this repo. To use it, edit the paths below (the uv
+  binary from `which uv`, the repo checkout, the log files), then:
+
+    cp deploy/com.tuntun.usfin.serve.plist.example ~/Library/LaunchAgents/com.tuntun.usfin.serve.plist
+    plutil -lint ~/Library/LaunchAgents/com.tuntun.usfin.serve.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tuntun.usfin.serve.plist
+
+  Stop it with `launchctl bootout gui/$(id -u)/com.tuntun.usfin.serve`.
+
+  WorkingDirectory is the repo, so config/, data/, raw/ and .env resolve as they do from a shell;
+  secrets (SEC_USER_AGENT, BLS_CONTACT_EMAIL, ...) stay in .env, never in this file. KeepAlive
+  restarts serve if it exits; missed fires while the Mac slept are caught up at wake/startup.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.tuntun.usfin.serve</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/uv</string>
+		<string>run</string>
+		<string>usfin</string>
+		<string>serve</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/tomtomtomtom/Projects/sec-edgar</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>/Users/tomtomtomtom/Projects/sec-edgar/data/usfin-serve.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/tomtomtomtom/Projects/sec-edgar/data/usfin-serve.log</string>
+</dict>
+</plist>

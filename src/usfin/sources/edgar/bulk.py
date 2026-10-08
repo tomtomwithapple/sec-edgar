@@ -32,6 +32,7 @@ copied into scratch files; a full load records its cost without them. Job `edgar
 
 import json
 import logging
+import re
 import tempfile
 import time
 import zipfile
@@ -162,15 +163,56 @@ def floor_bytes(settings: Settings) -> int:
     return int(settings.min_free_gb * GIB)
 
 
+class DiskLow(Exception):
+    """The streamed ZIP's `Content-Length` does not fit the guard: nothing was written."""
+
+    def __init__(self, g: Guard):
+        super().__init__(f"disk low: {g.describe()}; not downloading")
+        self.guard = g
+
+
+_CONTENT_RANGE = re.compile(r"bytes \d+-\d+/(\d+)")
+
+
 def head(client: http.Client, spec: Spec) -> int:
-    """The ZIP's size from a HEAD request (archived like every response)."""
+    """The ZIP's size: the HEAD's `Content-Length`, else a 1-byte ranged GET's total.
+
+    S35: SEC refused a HEAD on an Archives file whose GET worked (S36), while HEADs of both bulk
+    ZIPs answered 200 with their size (S26, S27, S35). So a refused HEAD (the client opens no SEC
+    block for it) or one without a size falls back to `GET` with `Range: bytes=0-0` and reads
+    `Content-Range: bytes 0-0/<size>` (live 206 on 2026-10-08). A server ignoring the Range (200,
+    whole body) is refused before the body is read; any other answer raises `BulkError`, a 403
+    blocks SEC as usual — the guard is never skipped. Every answer is archived as
+    `edgar_bulk_head`."""
     raw_id, response = client.request("HEAD", spec.url, source=SOURCE, dataset=HEAD_DATASET)
-    if response.status_code != 200:
-        raise BulkError(f"HEAD {spec.url} answered {response.status_code} (raw {raw_id})")
     length = response.headers.get("Content-Length")
-    if not length or not length.isdigit():
-        raise BulkError(f"HEAD {spec.url} gave no Content-Length; size unknown, not downloading")
-    return int(length)
+    if response.status_code == 200 and length and length.isdigit():
+        return int(length)
+    why = (
+        f"HEAD {spec.url} answered {response.status_code} (raw {raw_id})"
+        if response.status_code != 200
+        else f"HEAD {spec.url} gave no Content-Length (raw {raw_id})"
+    )
+    log.info("%s; sizing with a ranged GET", why)
+
+    def partial_only(r) -> None:
+        if r.status_code == 200:
+            raise BulkError(
+                f"{why}, and a ranged GET ignored its Range (200, whole body);"
+                " size unknown, not downloading"
+            )
+
+    raw_id, response = client.request(
+        "GET", spec.url, source=SOURCE, dataset=HEAD_DATASET, headers={"Range": "bytes=0-0"},
+        stream=True, inspect=partial_only,
+    )  # fmt: skip
+    m = _CONTENT_RANGE.fullmatch(response.headers.get("Content-Range", "").strip())
+    if response.status_code != 206 or m is None:
+        raise BulkError(
+            f"{why}; the ranged GET answered {response.status_code} without a size"
+            f" (raw {raw_id}); size unknown, not downloading"
+        )
+    return int(m[1])
 
 
 def guard(
@@ -189,10 +231,23 @@ def guard(
 # --- download and members -----------------------------------------------------------------------
 
 
-def download(client: http.Client, spec: Spec) -> int:
-    """Stream the ZIP into the raw store; return its raw id."""
+def download(
+    client: http.Client, spec: Spec, *, fits: Callable[[int], Guard] | None = None
+) -> int:
+    """Stream the ZIP into the raw store; return its raw id.
+
+    With `fits`, the GET's own `Content-Length` goes through the guard before a byte is written
+    (S35): a ZIP larger than the HEAD said raises `DiskLow` and nothing is archived."""
+
+    def check(response) -> None:
+        length = response.headers.get("Content-Length", "")
+        if fits is not None and response.status_code == 200 and length.isdigit():
+            g = fits(int(length))
+            if not g.ok:
+                raise DiskLow(g)
+
     raw_id, response = client.get(
-        spec.url, source=SOURCE, dataset=spec.raw_dataset, stream=True
+        spec.url, source=SOURCE, dataset=spec.raw_dataset, stream=True, inspect=check
     )
     if response.status_code != 200:
         raise BulkError(f"GET {spec.url} answered {response.status_code} (raw {raw_id})")
@@ -527,7 +582,13 @@ def _job_fetch(ctx: "jobs.JobContext", key: str) -> list[int]:
     if not g.ok:
         _disk_low(ctx, spec, g)
         raise jobs.JobSkipped(f"disk low: {g.describe()}; not downloading {spec.name}.zip")
-    raw_id = download(ctx.client, spec)
+    try:
+        raw_id = download(
+            ctx.client, spec, fits=lambda n: guard(ctx.con, ctx.settings, spec, n, limit=limit)
+        )
+    except DiskLow as exc:
+        _disk_low(ctx, spec, exc.guard)
+        raise jobs.JobSkipped(str(exc)) from None
     loaded = load(ctx.con, ctx.settings, spec, raw_id, limit=limit)
     ctx.memo[key] = loaded
     log.info(

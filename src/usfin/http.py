@@ -10,7 +10,13 @@ raw store before the call returns or raises. A SEC 403 opens a process-wide bloc
 daily-index file of today or a later day (New York date): the S3 store behind www.sec.gov answers
 `AccessDenied` (403, `application/xml`) for an object that does not exist yet, so such a 403 means
 "not published yet" and is returned to the caller like a 404, with no block (S36; C5 holds for
-every other SEC 403, a past day's daily index included).
+every other SEC 403, a past day's daily index included). A SEC 403 to a HEAD is returned too, with
+no block (S35): SEC refused a HEAD on an Archives file whose GET answered 200 (S36), so a refused
+HEAD is a method refusal, not a rate limit; the caller falls back to a GET, which blocks if refused.
+
+`inspect(response)` (optional) sees the final response before its body is read or archived; if it
+raises, the response is closed, nothing is archived and the error propagates — used to refuse a
+streamed bulk ZIP whose `Content-Length` does not fit the free-disk guard (S35).
 
 www.bls.gov (the release calendar; not api.bls.gov) answers 403 to any User-Agent without a
 contact email, and also to one that carries a URL (probed 2026-10-08), so requests to it send
@@ -168,6 +174,7 @@ class Client:
         json: Any = None,
         data: Any = None,
         stream: bool = False,
+        inspect: Callable[[httpx.Response], None] | None = None,
     ) -> tuple[int, httpx.Response]:
         """Send with limits and retries; archive the final response; return (raw_id, response).
 
@@ -222,6 +229,12 @@ class Client:
                 self._sleep(retry_after if retry_after is not None else backoff)
                 continue
 
+            if inspect is not None:
+                try:
+                    inspect(response)
+                except BaseException:
+                    response.close()
+                    raise
             try:
                 raw_id = self._archive(
                     response, source=source, dataset=dataset, request_sha=request_sha,
@@ -240,6 +253,8 @@ class Client:
                 if stream:
                     response.close()
             if sec and response.status_code == 403:
+                if request.method == "HEAD":
+                    return raw_id, response  # a refused HEAD: the caller falls back to a GET
                 if unpublished_daily_index(request.url, _wall_now().astimezone(ET).date()):
                     return raw_id, response  # not published yet: the caller decides, no block
                 self.sec_block.block()

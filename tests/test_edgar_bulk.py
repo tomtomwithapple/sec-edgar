@@ -97,7 +97,11 @@ def cli_env(settings, monkeypatch):
 
 
 class Sec:
-    """Serves both bulk ZIPs (HEAD and GET); records every request as 'METHOD name'."""
+    """Serves both bulk ZIPs (HEAD and GET); records every request as 'METHOD name', a ranged
+    GET as 'GET name bytes=0-0'. As live on 2026-10-08 (S35): HEAD 200 with Content-Length, a
+    `Range: bytes=0-0` GET 206 with `Content-Range: bytes 0-0/<size>`. `head_status` (Archives
+    HEAD answered 403 to S36), `ranges` (False: the Range header is ignored, 200 full body),
+    `range_status` and `get_length` (a GET announcing another Content-Length) vary that."""
 
     def __init__(self):
         self.bodies = {
@@ -105,17 +109,31 @@ class Sec:
             "companyfacts.zip": zip_of("companyfacts"),
         }
         self.content_length = True
+        self.head_status = 200
+        self.ranges = True
+        self.range_status = 206
+        self.get_length: int | None = None
         self.requests: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         name = request.url.path.rsplit("/", 1)[-1]
-        self.requests.append(f"{request.method} {name}")
+        rng = request.headers.get("Range")
+        self.requests.append(f"{request.method} {name}" + (f" {rng}" if rng else ""))
         body = self.bodies[name]
         headers = {"Content-Type": "application/zip"}
         if request.method == "HEAD":
+            if self.head_status != 200:
+                return httpx.Response(self.head_status, headers={"Content-Type": "text/html"})
             if self.content_length:
                 headers["Content-Length"] = str(len(body))
             return httpx.Response(200, headers=headers)
+        if rng and self.ranges:
+            if self.range_status != 206:
+                return httpx.Response(self.range_status, headers={"Content-Type": "text/html"})
+            headers["Content-Range"] = f"bytes 0-0/{len(body)}"
+            return httpx.Response(206, headers=headers, content=body[:1])
+        if self.get_length is not None:
+            headers["Content-Length"] = str(self.get_length)
         return httpx.Response(200, headers=headers, content=body)
 
 

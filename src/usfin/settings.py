@@ -36,6 +36,12 @@ def _merged(env_file: Path | None) -> Mapping[str, str | None]:
     return {**file_values, **os.environ}
 
 
+def environment(env_file: Path | None = None) -> dict[str, str | None]:
+    """The merged environment settings are read from (real env over `env_file`, default
+    `./.env`); `usfin doctor` reads which keys are set from it."""
+    return dict(_merged(env_file))
+
+
 def load_settings(env_file: Path | None = None) -> Settings:
     """Resolve settings; real environment variables win over `env_file` (default `./.env`)."""
     env = _merged(env_file)

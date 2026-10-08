@@ -9,7 +9,8 @@
 #     due: <rule>                  # due days for alert rules: a calendar name, none, or
 #                                  # {calendar: federal, nth_of_month: 8}; default = calendar
 #     alerts:                      # rules for every watermark key
-#       zero_new_rows: {}          # due day and no row dated after the day's first watermark
+#       zero_new_rows: {}          # due day and no row dated after the day's first watermark;
+#                                  # {after: "HH:MM"} judges it only from that NY time (S35)
 #       stale_watermark: {n: 2}    # more than n due days after the watermark
 #       value_jump: {pct: 25}      # a new row moved > pct % from the series' previous row
 #       row_count_swing: {pct: 2}  # full-file snapshots only
@@ -21,7 +22,8 @@ jobs:
     calendar: federal
     due: federal                   # DTS and Debt to the Penny publish every federal day
     alerts:
-      zero_new_rows: {}
+      zero_new_rows: {after: "17:00"}   # they publish ~16:00 ET: a run before the 17:00 fire
+                                        # (manual, catch-up) judges nothing (S35)
       stale_watermark: {n: 2}
       value_jump: {pct: 25}
     keys:
@@ -121,6 +123,7 @@ jobs:
     calendar: nyse
     due: nyse
     alerts:
-      zero_new_rows: {}            # no newer snapshot than the day's first watermark
+      zero_new_rows: {after: "07:00"}   # no newer snapshot than the day's first watermark;
+                                        # files are created ~03:03 ET, judged from the 07:00 fire
       stale_watermark: {n: 1}      # no new snapshot over a whole NYSE day
       row_count_swing: {pct: 2}    # rows vs the file's previous snapshot (none for the first)
