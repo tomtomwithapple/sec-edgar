@@ -4,6 +4,17 @@
 A filing row comes from whichever source saw the accession first; a later source only fills the
 columns still NULL (`accepted_at`, `report_date`, `primary_doc`) and never blanks or overwrites
 one, so the order sources run in cannot lose a value and a re-run changes nothing (C2).
+
+`cik` is the one exception (decided in S22): the feed names each party's role, the other sources
+do not (submissions: the company whose JSON it is; the daily index: one line per CIK). So once
+any party with a feed role is stored, `settle_cik` sets `cik` to the party with the first role in
+`ROLE_PRECEDENCE` (Issuer, Subject, Filer, Filed by, Reporting; the lowest CIK on a tie). It reads
+the whole party table, so the result does not depend on the order sources ran or pages arrived,
+and reparse lands on the same `cik`. A filing with no feed role keeps the CIK first written.
+
+`accepted_at` from the feed also wins (S22): the feed writes it with an explicit New York offset,
+while the submissions JSON's `acceptanceDateTime` is true UTC on the filing day and shifted by
+the offset later (see `submissions.accepted_utc`), so a value it wrote first may be 4–5 h off.
 """
 
 import json
@@ -14,6 +25,8 @@ from datetime import date, datetime
 import duckdb
 
 SOURCES = ("feed", "index", "submissions")
+ROLE_PRECEDENCE = ("Issuer", "Subject", "Filer", "Filed by", "Reporting")
+"""Feed roles in the order that picks `edgar_filing.cik` (other roles never pick it)."""
 FILLABLE = ("accepted_at", "report_date", "primary_doc")
 
 
@@ -63,13 +76,22 @@ def upsert_filings(con: duckdb.DuckDBPyConnection, filings: Sequence[Filing]) ->
         [payload],
     )
     fills = " OR ".join(f"(f.{c} IS NULL AND s.{c} IS NOT NULL)" for c in FILLABLE)
+    fills += (
+        " OR (s.source = 'feed' AND s.accepted_at IS NOT NULL"
+        " AND f.accepted_at IS DISTINCT FROM s.accepted_at)"
+    )
     con.execute(
         "CREATE OR REPLACE TEMP TABLE _filing_changed AS SELECT s.* FROM _filing_stage s"
         f" LEFT JOIN edgar_filing f USING (accession_no) WHERE f.accession_no IS NULL OR {fills}"
     )
     changed = con.execute("SELECT count(*) FROM _filing_changed").fetchone()[0]
     if changed:
-        sets = ", ".join(f"{c} = coalesce(edgar_filing.{c}, excluded.{c})" for c in FILLABLE)
+        sets = {c: f"coalesce(edgar_filing.{c}, excluded.{c})" for c in FILLABLE}
+        sets["accepted_at"] = (
+            "CASE WHEN excluded.source = 'feed' AND excluded.accepted_at IS NOT NULL"
+            f" THEN excluded.accepted_at ELSE {sets['accepted_at']} END"
+        )
+        sets = ", ".join(f"{c} = {expr}" for c, expr in sets.items())
         con.execute(
             "INSERT INTO edgar_filing SELECT * FROM _filing_changed"
             f" ON CONFLICT (accession_no) DO UPDATE SET {sets}"
@@ -92,3 +114,41 @@ def add_parties(con: duckdb.DuckDBPyConnection, parties: Iterable[tuple[str, int
         [json.dumps(rows)],
     )
     return con.execute("SELECT count(*) FROM edgar_filing_party").fetchone()[0] - before
+
+
+def best_party(parties: Iterable[tuple[int, str]]) -> int | None:
+    """The CIK `edgar_filing.cik` should be among (cik, role) parties, or None (no feed role)."""
+    ranked = [
+        (ROLE_PRECEDENCE.index(role), int(cik)) for cik, role in parties if role in ROLE_PRECEDENCE
+    ]
+    return min(ranked)[1] if ranked else None
+
+
+def settle_cik(con: duckdb.DuckDBPyConnection, accession_nos: Iterable[str]) -> int:
+    """Point `edgar_filing.cik` of these accessions at their best feed-role party (see the module
+    doc); return how many rows changed."""
+    accs = sorted(set(accession_nos))
+    if not accs:
+        return 0
+    ranks = " ".join(f"WHEN '{r}' THEN {i}" for i, r in enumerate(ROLE_PRECEDENCE))
+    roles = ", ".join(f"'{r}'" for r in ROLE_PRECEDENCE)
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE _best_party AS"
+        " SELECT accession_no, arg_min(cik, (CASE role " + ranks + " END, cik)) AS cik"
+        " FROM edgar_filing_party"
+        f" WHERE role IN ({roles})"
+        "  AND accession_no IN (SELECT unnest(json_transform(?, '[\"VARCHAR\"]')))"
+        " GROUP BY accession_no",
+        [json.dumps(accs)],
+    )
+    changed = con.execute(
+        "SELECT count(*) FROM edgar_filing f JOIN _best_party b USING (accession_no)"
+        " WHERE f.cik <> b.cik"
+    ).fetchone()[0]
+    if changed:
+        con.execute(
+            "UPDATE edgar_filing SET cik = b.cik FROM _best_party b"
+            " WHERE edgar_filing.accession_no = b.accession_no AND edgar_filing.cik <> b.cik"
+        )
+    con.execute("DROP TABLE _best_party")
+    return int(changed)

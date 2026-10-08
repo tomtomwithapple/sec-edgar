@@ -322,11 +322,7 @@ def test_the_registered_job_drains_nothing_until_pending_doc_exists(settings, fa
 
 
 def test_the_registered_job_takes_its_ciks_from_pending_companyfacts_docs(settings, fake, clock):
-    with store.session(settings.db_path, wait=0) as con:  # pending_doc as planned for S22
-        con.execute(
-            "CREATE TABLE pending_doc (accession_no VARCHAR, kind VARCHAR, cik BIGINT,"
-            " enqueued_at TIMESTAMP, done_at TIMESTAMP, PRIMARY KEY (accession_no, kind))"
-        )
+    with store.session(settings.db_path, wait=0) as con:  # pending_doc (migration 010, S22)
         con.execute(
             "INSERT INTO pending_doc VALUES"
             " ('a1', 'companyfacts', 320193, now(), NULL),"

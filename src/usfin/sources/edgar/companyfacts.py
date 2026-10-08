@@ -15,7 +15,8 @@ rows (C2); a fact missing from a later document is kept.
 
 Every response is archived first (raw dataset `edgar_companyfacts`, source `edgar`). Watermark
 key = the 10-digit CIK, value = its newest `filed`. The registered job drains the CIKs of open
-`pending_doc` rows of kind `companyfacts` (that table arrives with the feed, S22); `usfin edgar
+`pending_doc` rows of kind `companyfacts` (queued by the feed) and closes the rows whose accession
+the facts now carry (`pending.mark_done`); `usfin edgar
 facts --cik` runs it for given CIKs (`for_ciks`). `store_document(con, doc, name=)` takes the
 document name (`CIK##########.json`, as served and as companyfacts.zip members are named), so S26's
 bulk load reuses it as is.
@@ -30,7 +31,8 @@ from typing import Any
 
 import duckdb
 
-from usfin import jobs, raw, store
+from usfin import jobs, raw
+from usfin.sources.edgar import pending
 
 BASE = "https://data.sec.gov/api/xbrl/companyfacts/"
 SOURCE = "edgar"
@@ -214,14 +216,13 @@ def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
 
 
 def pending_ciks(ctx: "jobs.JobContext") -> list[str]:
-    """CIKs with open `pending_doc` rows of kind `companyfacts` (none before S22 adds the table)."""
-    if "pending_doc" not in store.table_names(ctx.con):
-        return []
-    rows = ctx.con.execute(
-        "SELECT DISTINCT cik FROM pending_doc WHERE kind = ? AND done_at IS NULL ORDER BY cik",
-        [KIND],
-    ).fetchall()
-    return [cik_key(r[0]) for r in rows]
+    """CIKs with open `pending_doc` rows of kind `companyfacts`."""
+    return [cik_key(c) for c in pending.open_ciks(ctx.con, "companyfacts")]
+
+
+def _done(ctx: "jobs.JobContext", key: str) -> None:
+    """Close the key's queued `companyfacts` docs the fetched document carries (`pending.mark_done`)."""
+    pending.mark_done(ctx.con, "companyfacts", int(key), now=jobs._utc_naive(ctx.now))
 
 
 JOB = jobs.REGISTRY.register(
@@ -230,6 +231,7 @@ JOB = jobs.REGISTRY.register(
         keys=pending_ciks,
         fetch=_fetch,
         parsers={RAW_DATASET: _parse},
+        after_key=_done,
     )
 )
 """Per-CIK XBRL facts into `xbrl_fact`; chained after the feed (S22), no schedule of its own."""

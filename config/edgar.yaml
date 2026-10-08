@@ -1,1 +1,8 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# EDGAR watchlist (docs/plans/us-fin-ingest.md, How > SEC EDGAR > Feed). A filing in the feed
+# with a party on this list queues the company's submissions JSON, and its 8-K / 8-K/A also
+# queue companyfacts (decision C: every 10-K/10-Q filer gets companyfacts anyway).
+# CIKs as plain integers. Seeded in S22 with three large filers; edit freely.
+watchlist:
+  - 320193    # Apple Inc.
+  - 19617     # JPMorgan Chase & Co.
+  - 789019    # Microsoft Corp.

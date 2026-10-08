@@ -12,6 +12,12 @@ manual runs ignore it and the scheduler guards scheduled ones.
 A derived job (`compute`, e.g. `auction_xcheck`) reads tables other jobs filled instead of
 fetching: its `compute(ctx, key)` runs per key in its own transaction and returns rows changed.
 
+A job's `after_key(ctx, key)` runs after a key fully succeeded, in its own transaction (never on
+reparse): bookkeeping such as closing the key's `pending_doc` rows.
+
+SEC jobs (named `edgar_*`) record `skipped`, with no request, while `http.SEC_BLOCK` is open (the
+10 minutes after a SEC 403); the run that met the 403 records `failed` and runs no further key.
+
 After an `ok` run, each job in `then` runs in turn (its own `job_run`, trigger `chained`, and
 its own chain); a failed run chains nothing, and a job runs at most once per chain.
 After every recorded run (ok or failed) the job's alert rules run (`usfin.alerts`) and new
@@ -72,6 +78,9 @@ class Job:
     compute: Callable[["JobContext", str], int] | None = None
     """A derived job (no source of its own): `compute(ctx, key) -> rows` runs after the key's
     fetch and parses, in its own transaction, and reads tables other jobs filled."""
+    after_key: Callable[["JobContext", str], None] | None = None
+    """Runs after a key's fetch, parses and compute all succeeded, in its own transaction (never
+    on reparse): bookkeeping such as marking the key's `pending_doc` rows done."""
     retry: Callable[[duckdb.DuckDBPyConnection, Settings, datetime], datetime | None] | None = None
     """In `usfin serve`, after each run: `retry(con, settings, now)` returns when to run the job
     again today (a one-shot `<name>_retry`), or None (and raises its own alerts when it gives up).
@@ -124,6 +133,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.edgar.tickers",
     "usfin.sources.edgar.submissions",
     "usfin.sources.edgar.companyfacts",
+    "usfin.sources.edgar.feed",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
@@ -263,15 +273,34 @@ def _run_key(ctx: JobContext, key: str) -> int:
         except BaseException:
             con.execute("ROLLBACK")
             raise
-    if job.compute is not None:
+    for hook in (job.compute, job.after_key):
+        if hook is None:
+            continue
         con.execute("BEGIN TRANSACTION")
         try:
-            rows += int(job.compute(ctx, key) or 0)
+            out = hook(ctx, key)
+            if hook is job.compute:
+                rows += int(out or 0)
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
             raise
     return rows
+
+
+SEC_JOB_PREFIX = "edgar_"
+"""Jobs named `edgar_*` talk to SEC: inside the SEC block window they record `skipped`."""
+
+
+def is_sec_job(job: Job) -> bool:
+    return job.name.startswith(SEC_JOB_PREFIX)
+
+
+def _sec_blocked_reason() -> str | None:
+    block = usfin_http.SEC_BLOCK
+    if not block.blocked():
+        return None
+    return f"SEC requests blocked for another {block.remaining():.0f}s after a 403; not run"
 
 
 def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any]) -> RunResult:
@@ -283,12 +312,21 @@ def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any])
         " VALUES (?, ?, 'running', ?, ?) RETURNING id",
         [job.name, _utc_naive(now), ctx_args["trigger"], json.dumps(before)],
     ).fetchone()[0]
+    blocked = _sec_blocked_reason() if is_sec_job(job) else None
+    if blocked is not None:
+        con.execute(
+            "UPDATE job_run SET finished_at = ?, status = 'skipped', rows_upserted = 0,"
+            " watermark_after = ?, error = ? WHERE id = ?",
+            [_utc_naive(datetime.now(UTC)), json.dumps(before), blocked, run_id],
+        )
+        log.info("job %s skipped: %s", job.name, blocked)
+        return RunResult(job.name, run_id, "skipped", 0, blocked)
     ctx = JobContext(job=job, con=con, run_id=run_id, watermarks=dict(before), **ctx_args)
     rows = 0
     key_errors: dict[str, str] = {}
     try:
         keys = job.key_list(ctx)
-        for key in keys:
+        for i, key in enumerate(keys):
             ctx._proposed.pop(key, None)
             try:
                 rows += _run_key(ctx, key)
@@ -299,6 +337,10 @@ def _execute(job: Job, con: duckdb.DuckDBPyConnection, ctx_args: dict[str, Any])
                 key_errors[key] = f"{type(exc).__name__}: {exc}"
                 log.error("job %s key %s failed: %s", job.name, key, key_errors[key])
                 log.debug("job %s key %s traceback", job.name, key, exc_info=True)
+                if isinstance(exc, usfin_http.SecBlocked):
+                    for rest in keys[i + 1 :]:  # every SEC request would be refused now
+                        key_errors[rest] = "not run: SEC blocked"
+                    break
     except Exception as exc:  # keys() itself failed
         key_errors["*"] = f"{type(exc).__name__}: {exc}"
         log.error("job %s failed: %s", job.name, key_errors["*"])

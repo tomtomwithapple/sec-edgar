@@ -215,8 +215,8 @@ def test_a_sec_403_fails_the_run_stores_nothing_and_blocks_sec(settings, fake, c
     assert result.status == "failed" and "403" in result.error
     assert http.SEC_BLOCK.blocked()
     assert _query(settings, "SELECT count(*) FROM edgar_company") == [(0,)]
-    again = _run(settings, clock)  # inside the block window: refused before sending
-    assert again.status == "failed" and len(fake.requests) == 1
+    again = _run(settings, clock)  # inside the block window: skipped before sending (S22)
+    assert again.status == "skipped" and len(fake.requests) == 1
 
 
 def test_reparse_rebuilds_the_same_table_without_a_request(settings, fake, clock):

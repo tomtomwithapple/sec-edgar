@@ -16,13 +16,18 @@ when no stored response has been parsed for that listing.
 forward by the UTC offset once more (2026-07-30 16:30:28 EDT is written 2026-07-31T00:30:28Z;
 2026-01-29 16:30:33 EST 2026-01-30T02:30:33Z; checked against the filings' index headers on
 2026-10-08), so `accepted_utc` reads it as UTC, converts to New York and keeps the wall time.
+*(Found in S22.)* That shift is not on every filing: on the filing day the JSON carries the true
+UTC (JPMorgan 424B2s of 2026-10-07 read 20:24:53Z where the feed says 16:24:53-04:00; that day's
+`recent` entries all fall 06:00–22:00 ET read as UTC, earlier days' sit 4 h later), so a filing
+fetched on its own day is stored 4–5 h early here. The feed's `accepted_at` replaces it
+(`filings.upsert_filings`); a filing the feed never saw keeps it — S23/S26 decide the rule.
 
 Each filing becomes an `edgar_filing` row (`source='submissions'`, `cik` = the company) and an
 `edgar_filing_party` row (the company, role `submissions`: the JSON names no role). Every
 response is archived first (raw dataset `edgar_submissions`, source `edgar`). Watermark key = the
 10-digit CIK, value = its newest `filingDate`. The registered job drains the CIKs of open
-`pending_doc` rows of kind `submissions` (that table arrives with the feed, S22; until then it
-has no keys); `usfin edgar submissions --cik` runs it for given CIKs (`for_ciks`).
+`pending_doc` rows of kind `submissions` (queued by the feed for watchlist companies) and closes
+the rows whose accession the company now lists (`pending.mark_done`); `usfin edgar submissions --cik` runs it for given CIKs (`for_ciks`).
 """
 
 import json
@@ -35,8 +40,9 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 
-from usfin import jobs, raw, store
+from usfin import jobs, raw
 from usfin.sources.edgar import filings as edgar_filings
+from usfin.sources.edgar import pending
 
 BASE = "https://data.sec.gov/submissions/"
 SOURCE = "edgar"
@@ -253,14 +259,13 @@ def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
 
 
 def pending_ciks(ctx: "jobs.JobContext") -> list[str]:
-    """CIKs with open `pending_doc` rows of kind `submissions` (none before S22 adds the table)."""
-    if "pending_doc" not in store.table_names(ctx.con):
-        return []
-    rows = ctx.con.execute(
-        "SELECT DISTINCT cik FROM pending_doc WHERE kind = 'submissions' AND done_at IS NULL"
-        " ORDER BY cik"
-    ).fetchall()
-    return [cik_key(r[0]) for r in rows]
+    """CIKs with open `pending_doc` rows of kind `submissions`."""
+    return [cik_key(c) for c in pending.open_ciks(ctx.con, "submissions")]
+
+
+def _done(ctx: "jobs.JobContext", key: str) -> None:
+    """Close the key's queued `submissions` docs the fetched document carries (`pending.mark_done`)."""
+    pending.mark_done(ctx.con, "submissions", int(key), now=jobs._utc_naive(ctx.now))
 
 
 JOB = jobs.REGISTRY.register(
@@ -269,6 +274,7 @@ JOB = jobs.REGISTRY.register(
         keys=pending_ciks,
         fetch=_fetch,
         parsers={RAW_DATASET: _parse},
+        after_key=_done,
     )
 )
 """Per-CIK submissions into `edgar_filing`; chained after the feed (S22), no schedule of its own."""
