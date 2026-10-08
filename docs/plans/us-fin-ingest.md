@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S19 done — S18 blocked (FRED_API_KEY) — next: S20
+Status: S20 done — S18 blocked (FRED_API_KEY) — next: S21
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -685,6 +685,30 @@ zero-padded in URLs, stored as BIGINT.
 - Submissions (job `edgar_submissions`, raw dataset `edgar_submissions`):
   `data.sec.gov/submissions/CIK##########.json`; parse `filings.recent` columnar arrays and follow
   `filings.files[]` (older pages) → `edgar_filing` (`source='submissions'`).
+  *(Amended in S20.)* Migration `008_edgar_filing.sql`; `filed_at` is a DATE (EDGAR's filing date),
+  `accepted_at` naive UTC; the fill rule is shared code (`usfin.sources.edgar.filings`:
+  `upsert_filings` fills only `accepted_at`/`report_date`/`primary_doc` when NULL — `cik`, `form`,
+  `filed_at`, `source` stay as the first source wrote them; `add_parties`). Submissions writes
+  `cik` = the company whose JSON it is and one party row per filing with **role `submissions`** (the
+  JSON names no role); S22 decides whether a feed role (Issuer…) may replace a `cik` first written
+  by submissions or the index, since "fills NULLs" alone never would. Live facts (2026-10-08):
+  **`acceptanceDateTime` is not UTC despite its `Z`** — it is New York wall time pushed forward by
+  the UTC offset once more (Apple 8-K header ACCEPTANCE-DATETIME 20260730163028 EDT is written
+  `2026-07-31T00:30:28.000Z`, 20260129163033 EST `2026-01-30T02:30:33.000Z`, pre-2001 filings
+  `T10:00:00Z` in winter = midnight ET), so it is read as UTC, converted to New York and the wall
+  time stored as UTC. `recent` is the newest 1 000 filings, or one year for very heavy filers
+  (JPMorgan 26 311 filings, 4.6 MB). Pages hold the same arrays at their top level, are **numbered
+  newest first** (JPMorgan `-001` = 2025-09-03..2025-10-05, `-070` = 1994..2004), and a listing's
+  `filingFrom`/`filingTo` are not its first/last filing dates (Apple's page lists ..2015-09-15, its
+  newest filing is 2015-09-11). So pages are tracked by listing, not name, in
+  `edgar_submissions_page(cik, filing_from, filing_to, filing_count, name, raw_id)` (filled by the
+  parsers, so reparse rebuilds it), and a run fetches only listings with no parsed response: a
+  re-run is one request per CIK. Watermark key = 10-digit CIK, value = newest `filingDate`. The
+  registered job's keys are the CIKs of open `pending_doc` rows of kind `submissions` (none until
+  S22 creates the table; marking rows done is S22's); `usfin edgar submissions --cik N [--cik …]`
+  runs the same job (`submissions.for_ciks`, trigger manual) for given CIKs. `store_document(con,
+  doc, name=)` takes the member name, so S26's bulk ZIP members use it as is. schedule.yaml lists
+  the job with no cron (`federal`, `due: none`).
 - Companyfacts (job `edgar_companyfacts`, raw dataset `edgar_companyfacts`):
   `data.sec.gov/api/xbrl/companyfacts/CIK##########.json` → `xbrl_fact(cik, taxonomy, tag, unit,
   accn, period_start, period_end, is_instant, value DOUBLE, fy, fp, form, filed, frame NULL)`, PK
@@ -1186,7 +1210,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S17 BLS release calendar and retry | done | 2026-10-08 | 2136670 | 26 new (test_bls_calendar); suite 334 passed | www.bls.gov 403s the plan's `usfin/<version> (+https://…)` User-Agent (also with browser Accept/Sec-Fetch headers or `From:`, and any UA carrying a URL); a UA with a contact email and no URL gets 200, so www.bls.gov now gets `usfin/<version> (<BLS_CONTACT_EMAIL>)` — new env var, set by the user in `.env` (was a block until then; a first run without it on `data/usfin.duckdb` failed #21 with ConfigError, no request, and raised alert #2 `calendar_stale`). Live with it set (Mac clock 2026-10-07 ET evening; migration 006 applied): `usfin run bls_calendar` → `#22 ok rows 313` (raw 651, 80 672 bytes `text/calendar`), again → `#23 ok rows 0` (C2); `usfin reparse bls_calendar` replayed 2 responses, 0 changes. **313 releases, 2025-01-03..2026-12-30**; 92 events map to configured series. `usfin bls releases --next 5`: 2026-10-14 08:30 CPI (CUSR0000SA0, CUSR0000SA0L1E); 10-15 08:30 PPI (WPSFD4); 11-03 **10:00** JOLTS; 11-06 08:30 Employment Situation (CES0000000001, LNS14000000, CES0500000003); 11-10 08:30 CPI. Calendar reaches 84 days ahead (> 30), so alert #2 was acked. `usfin schedule`: bls_calendar Mon 06:00 (10-12, 10-19, …). No api.bls.gov data request in this slice; retry tested with fakes. Plan amended (How › BLS, Conventions): iCal URL, the bls.gov User-Agent rule + `BLS_CONTACT_EMAIL`, release mapping (JOLTS releases at 10:00, after the 09:00 run, so its days always retry), `bls_release` + `bls_observation_dated` (migration 006), due days = release days (`due: {releases: bls_release}`, `alerts.DAY_SOURCES`), value_jump wired with per-series `jump_pct` and a period→date baseline (`Observed.jump_pct`, `watermark_date`), no generic zero_new_rows/stale_watermark for bls (period watermark; the retry raises `stale_watermark` past 12:00 ET), `Job.retry` + one-shot `bls_retry`. |
 | S18 ALFRED backfill | blocked: FRED_API_KEY not set in .env (needed to record fixtures and run); add it and re-run `/plan-build docs/plans/us-fin-ingest.md --slice S18` | | | | |
 | S19 EDGAR tickers and ticker_norm | done | 2026-10-08 | 141d84b | 21 new (test_edgar_tickers 10, test_ticker_norm 11); suite 355 passed | First live SEC traffic, 3 requests in all, no 403, `SEC_USER_AGENT` from `.env`: one `usfin http get` of company_tickers.json to record the fixture (raw 653, dataset `http_get`, 798 727 bytes, trimmed to 14 verbatim entries, 1 KB), then the Run. `usfin run edgar_tickers` on `data/usfin.duckdb` (Mac clock 22:27 ET on 10-07; migration 007 applied) → `#24 ok rows 10434` in 1.3 s; again → `#25 ok rows 0` (C2; same sha256 body); `usfin reparse edgar_tickers` replayed 2 responses, rows 0. `edgar_company` 10 434 rows, 8 016 CIKs, all active, 10 434 distinct `ticker_norm`. `usfin edgar company AAPL` → CIK 0000320193 Apple Inc., AAPL; `brk.b` → 0001067983 BRK-A/BRK-B (norm BRK.A/BRK.B); `ZZZZQ` exit 1. `usfin schedule`: edgar_tickers 07:15 daily (any). No alerts. Plan amended (How › SEC EDGAR, Nasdaq Trader): the file's shape and counts, `updated_at` = the changing response's `fetched_at` (so reparse is identical), EDGAR suffixes `-UN`/`-WT`/`-RI` (units won't meet Nasdaq `.U` under `ticker_norm` — S31 decides), and a SEC 403/block makes the run `failed`, not `skipped` (runner not wired; left to S22). |
-| S20 EDGAR submissions | todo | | | | |
+| S20 EDGAR submissions | done | 2026-10-08 | | 17 new (test_edgar_submissions); suite 372 passed | Live, no 403, `SEC_USER_AGENT` from `.env`. Probes via `usfin http get` (7 requests): Apple's JSON and its one page (fixtures, trimmed to 7 + 4 filings), two Apple 8-K `-index-headers.html` (proved `acceptanceDateTime`'s `Z` is false: header 16:30:28 EDT vs JSON 00:30:28Z next day, 16:30:33 EST vs 02:30:33Z), Berkshire (1 page, so not heavy enough) and JPMorgan (70 pages). On `data/usfin.duckdb` (migration 008 applied): `usfin edgar submissions --cik 320193` → `#26 ok rows 2264` (1 000 recent + 1 264 on page 001, 1994-01-26..2026-10-05), 2 requests, 3.8 s; `--cik 19617` (JPMorgan, the paged-history check) → `#27 ok rows 168590` (26 311 recent — one year — + 142 279 on 70 pages, exactly the listed counts, 1994-01-20..2026-10-07; 130 136 424B2), 71 requests, 29.8 MB of JSON, 108 s, nearly all of it SEC transfer time (parsing all 75 responses takes 2.8 s); both again → `#28 ok rows 0`, 1 request per CIK (pages skipped by listing), 30.5 s (JPMorgan's 4.6 MB main JSON); `usfin reparse edgar_submissions` replayed 75 responses, rows 0; on a scratch copy with the three tables emptied it rebuilt 170 854 filings, 170 854 parties and 71 pages to the identical md5 in 3.8 s. `usfin run edgar_submissions` (no `pending_doc` yet) → `#29 ok rows 0`, no request. Watermarks 0000320193 = 2026-10-05, 0000019617 = 2026-10-07; no alerts; `raw/` 9.9 MB, DB 80 MB. Plan amended (How › SEC EDGAR, Submissions): false-UTC acceptance times, `filed_at` DATE, fill rule as shared code, party role `submissions` (S22 decides cik precedence over it), pages numbered newest first with listing dates ≠ filing dates so tracked by listing in new `edgar_submissions_page`, keys from `pending_doc`, `--cik` CLI. |
 | S21 EDGAR companyfacts | todo | | | | |
 | S22 EDGAR feed and document queue | todo | | | | |
 | S23 EDGAR daily-index reconcile | todo | | | | |

@@ -67,3 +67,7 @@ jobs:
                                    # watermark; pairs it drops are kept inactive
     calendar: any
     due: none
+  edgar_submissions:               # no cron: drains pending_doc kind submissions, chained after
+                                   # edgar_feed (S22); `usfin edgar submissions --cik` by hand
+    calendar: federal
+    due: none

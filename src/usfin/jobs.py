@@ -122,6 +122,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.bls",
     "usfin.sources.bls_calendar",
     "usfin.sources.edgar.tickers",
+    "usfin.sources.edgar.submissions",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 

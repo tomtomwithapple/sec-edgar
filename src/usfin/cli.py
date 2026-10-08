@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from typing import Annotated
 
 import duckdb
 import typer
@@ -13,6 +14,7 @@ from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
 from usfin.sources import bls, bls_calendar, fiscal, treasurydirect
+from usfin.sources.edgar import submissions as edgar_submissions
 from usfin.sources.edgar import tickers as edgar_tickers
 
 app = typer.Typer(no_args_is_help=True)
@@ -459,6 +461,51 @@ def edgar_company(
             f"  {ticker:<10} {norm:<10} {'active' if active else 'inactive':<8}"
             f"  updated {updated_at:%Y-%m-%d %H:%M:%S}Z"
         )
+
+
+@edgar_app.command("submissions")
+def edgar_submissions_cmd(
+    cik: Annotated[
+        list[str], typer.Option("--cik", help="Company CIK (digits); repeat for more.")
+    ],
+) -> None:
+    """Run job `edgar_submissions` now for the given CIKs (recent filings and every older page)."""
+    try:
+        ciks = [int(c) for c in cik]
+    except ValueError:
+        raise typer.BadParameter(f"CIKs are digits, got {cik!r}", param_hint="--cik") from None
+    if any(c <= 0 for c in ciks):
+        raise typer.BadParameter(f"CIKs are positive, got {cik!r}", param_hint="--cik")
+    job = edgar_submissions.for_ciks(ciks)
+    registry = jobs.Registry()
+    registry.register(job)
+    started = time.monotonic()
+    result = jobs.run_job(job.name, registry=registry, chain=False)
+    ok = _echo_run(result)
+    if result.run_id is None:
+        raise typer.Exit(1)
+    with _db_session() as con:
+        run_start = con.execute(
+            "SELECT started_at FROM job_run WHERE id = ?", [result.run_id]
+        ).fetchone()[0]
+        for c in dict.fromkeys(ciks):
+            requests = con.execute(
+                "SELECT count(*) FROM raw_response WHERE dataset = ? AND fetched_at >= ?"
+                " AND url LIKE ?",
+                [edgar_submissions.RAW_DATASET, run_start, f"%/CIK{c:010d}%"],
+            ).fetchone()[0]
+            n, lo, hi = con.execute(
+                "SELECT count(*), min(filed_at), max(filed_at) FROM edgar_filing WHERE cik = ?",
+                [c],
+            ).fetchone()
+            pages = con.execute(
+                f"SELECT count(*) FROM {edgar_submissions.PAGES} WHERE cik = ?", [c]
+            ).fetchone()[0]
+            span = f" {lo}..{hi}" if n else ""
+            typer.echo(f"CIK {c:010d}  filings {n}{span}  pages {pages}  requests {requests}")
+    typer.echo(f"{time.monotonic() - started:.1f} s")
+    if not ok:
+        raise typer.Exit(1)
 
 
 alerts_app = typer.Typer(help="Alerts: data-quality alerts raised after job runs.")
