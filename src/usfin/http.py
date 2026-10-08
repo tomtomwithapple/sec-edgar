@@ -21,8 +21,13 @@ streamed bulk ZIP whose `Content-Length` does not fit the free-disk guard (S35).
 www.bls.gov (the release calendar; not api.bls.gov) answers 403 to any User-Agent without a
 contact email, and also to one that carries a URL (probed 2026-10-08), so requests to it send
 `usfin/<version> (<BLS_CONTACT_EMAIL>)`; without that setting → `ConfigError`, no request.
+
+A secret query parameter (`api_key`, FRED/ALFRED's key, S18) never leaves the process except to
+its host: `redact` replaces its value with `REDACTED` in the archived URL, the request hash, every
+error message and httpx's own `HTTP Request:` log line.
 """
 
+import logging
 import re
 import threading
 import time
@@ -48,6 +53,25 @@ _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 BLS_WWW_HOSTS = frozenset({"www.bls.gov"})
 _EMAIL = re.compile(r"[^@\s()<>/]+@[^@\s()<>/]+\.[^@\s()<>/]+")
 ET = ZoneInfo("America/New_York")
+_SECRET_PARAM = re.compile(r"(?<=[?&]api_key=)[^&#\s\"']+")
+
+
+def redact(text: object) -> str:
+    """`text` (a URL or a message carrying one) with every `api_key=` value replaced."""
+    return _SECRET_PARAM.sub("REDACTED", str(text))
+
+
+class _RedactFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        shown = redact(message)
+        if shown != message:
+            record.msg, record.args = shown, ()
+        return True
+
+
+logging.getLogger("httpx").addFilter(_RedactFilter())
+
 _DAILY_INDEX_DAY = re.compile(r"^/Archives/edgar/daily-index/\d{4}/QTR[1-4]/[a-z]+\.(\d{8})\.")
 
 
@@ -200,8 +224,9 @@ class Client:
         request = self._http.build_request(
             method, url, params=params, headers=req_headers, json=json, data=data
         )
+        shown = redact(request.url)
         request_sha = sha256(
-            f"{request.method} {request.url}\n".encode() + request.read()
+            f"{request.method} {shown}\n".encode() + request.read()
         ).hexdigest()
         bucket = self.limiters.for_policy(policy)
 
@@ -209,7 +234,7 @@ class Client:
             if sec and self.sec_block.blocked():
                 raise SecBlocked(
                     f"SEC requests blocked for another {self.sec_block.remaining():.0f}s "
-                    f"after a 403; not sending {request.url}"
+                    f"after a 403; not sending {shown}"
                 )
             bucket.acquire()
             try:
@@ -217,7 +242,7 @@ class Client:
             except httpx.TransportError as exc:
                 if attempt == MAX_TRIES:
                     raise HttpError(
-                        f"{method} {request.url} failed after {MAX_TRIES} tries: {exc!r}"
+                        f"{method} {shown} failed after {MAX_TRIES} tries: {exc!r}"
                     ) from exc
                 self._sleep(BACKOFF_BASE * 2 ** (attempt - 1))
                 continue
@@ -245,7 +270,7 @@ class Client:
                 # store drops its spool), so it is a transport failure like any other
                 if attempt == MAX_TRIES:
                     raise HttpError(
-                        f"{method} {request.url} body cut off after {MAX_TRIES} tries: {exc!r}"
+                        f"{method} {shown} body cut off after {MAX_TRIES} tries: {exc!r}"
                     ) from exc
                 self._sleep(BACKOFF_BASE * 2 ** (attempt - 1))
                 continue
@@ -259,14 +284,14 @@ class Client:
                     return raw_id, response  # not published yet: the caller decides, no block
                 self.sec_block.block()
                 raise SecBlocked(
-                    f"SEC answered 403 for {request.url}; SEC requests blocked for "
+                    f"SEC answered 403 for {shown}; SEC requests blocked for "
                     f"{SEC_BLOCK_SECONDS:.0f}s",
                     raw_id=raw_id,
                     response=response,
                 )
             if response.status_code in _RETRY_STATUSES:
                 raise HttpError(
-                    f"{method} {request.url} answered {response.status_code} "
+                    f"{method} {shown} answered {response.status_code} "
                     f"after {MAX_TRIES} tries",
                     raw_id=raw_id,
                     response=response,
@@ -300,7 +325,7 @@ class Client:
             self.con,
             source=source,
             dataset=dataset,
-            url=str(response.request.url),
+            url=redact(response.request.url),
             body=response.iter_bytes(raw.CHUNK_SIZE) if stream else response.content,
             http_status=response.status_code,
             content_type=response.headers.get("Content-Type"),

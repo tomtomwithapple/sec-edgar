@@ -53,7 +53,7 @@ ENV: tuple[EnvVar, ...] = (
     EnvVar("SEC_USER_AGENT", True, True, "EDGAR jobs: 'Name email' (SEC fair access)"),
     EnvVar("BLS_CONTACT_EMAIL", True, True, "www.bls.gov release calendar (bls_calendar)"),
     EnvVar("BLS_API_KEY", True, False, "BLS v2 (keyless v1 with 15-min retries otherwise)"),
-    EnvVar("FRED_API_KEY", True, False, "ALFRED backfill of BLS first prints (S18 needs it)"),
+    EnvVar("FRED_API_KEY", True, False, "ALFRED backfill of BLS first prints (usfin bls alfred-backfill)"),
     EnvVar("ALERT_WEBHOOK_URL", True, False, "alerts POSTed as JSON"),
     EnvVar("USFIN_DB", False, False, "DuckDB file", "data/usfin.duckdb"),
     EnvVar("USFIN_RAW", False, False, "raw responses dir", "raw"),

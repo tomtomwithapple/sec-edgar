@@ -52,6 +52,8 @@ V1_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 V2_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
 SOURCE = "bls"
 RAW_DATASET = "bls_timeseries"
+ALFRED_DATASET = "alfred_observations"
+"""ALFRED's vintages of the same series (S18, `usfin.sources.alfred`), replayed before BLS."""
 TABLE = "bls_observation"
 LIMITS = {"v1": (25, 10), "v2": (50, 20)}
 """(series per query, years per query) for each API version."""
@@ -492,18 +494,26 @@ def retry(con: duckdb.DuckDBPyConnection, settings, now: datetime) -> datetime |
     return None
 
 
+def _parse_alfred(ctx: "jobs.JobContext", raw_id: int) -> int:
+    from usfin.sources import alfred  # alfred builds on this module
+
+    return alfred.parse_raw(ctx, raw_id)
+
+
 JOB = jobs.REGISTRY.register(
     jobs.Job(
         name="bls",
         keys=_keys,
         fetch=_fetch,
-        parsers={RAW_DATASET: _parse},
+        parsers={RAW_DATASET: _parse, ALFRED_DATASET: _parse_alfred},
         versioned=(TABLE,),
+        replay_first=(ALFRED_DATASET,),
         observed=_observed,
         retry=retry,
     )
 )
-"""All configured series in one query; versioned rows in `bls_observation`."""
+"""All configured series in one query; versioned rows in `bls_observation`. Reparse replays the
+ALFRED backfill's responses (`usfin bls alfred-backfill`) first, then BLS's in `fetched_at` order."""
 
 
 def _today() -> date:

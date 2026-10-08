@@ -13,7 +13,7 @@ import uvicorn
 from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import ConfigError, load_settings
-from usfin.sources import bls, bls_calendar, fiscal, nasdaqtrader, treasurydirect
+from usfin.sources import alfred, bls, bls_calendar, fiscal, nasdaqtrader, treasurydirect
 from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
 from usfin.sources.edgar import concepts as edgar_concepts
@@ -425,6 +425,44 @@ def bls_validate() -> None:
     typer.echo(f"{good} of {len(checks)} series ok")
     if good != len(checks):
         raise typer.Exit(1)
+
+
+@bls_app.command("alfred-backfill")
+def bls_alfred_backfill() -> None:
+    """Fetch every config/bls.yaml series' ALFRED vintages (first prints), then reparse bls."""
+    settings = load_settings()
+    if not settings.fred_api_key:
+        typer.echo(
+            "error: FRED_API_KEY is not set — get a free key at "
+            "https://fred.stlouisfed.org/docs/api/api_key.html and add FRED_API_KEY=<key> to .env;"
+            " nothing was requested",
+            err=True,
+        )
+        raise typer.Exit(1)
+    started = time.monotonic()
+    with _db_session(apply_migrations=True) as con, usfin_http.Client(con) as client:
+        try:
+            result = alfred.backfill(con, settings, client)
+        except (usfin_http.HttpError, alfred.AlfredError, ConfigError) as exc:
+            typer.echo(f"error: {usfin_http.redact(exc)}", err=True)
+            raise typer.Exit(1) from None
+        counts = dict(
+            con.execute(
+                "SELECT series_id, count(*) FROM bls_observation WHERE source = 'alfred'"
+                " GROUP BY ALL"
+            ).fetchall()
+        )
+    for s in bls.load_series(settings.config_dir).values():
+        raw_id, n = result.fetched[s.fred_id]
+        typer.echo(
+            f"{s.series_id}\t{s.fred_id}\traw {raw_id}\t{n} vintages\t"
+            f"{counts.get(s.series_id, 0)} alfred rows"
+        )
+    r = result.reparse
+    typer.echo(
+        f"reparsed bls: {len(r.raw_ids)} raw responses, deleted {r.deleted}, rebuilt {r.rows}"
+        f" in {time.monotonic() - started:.1f} s"
+    )
 
 
 @bls_app.command("releases")

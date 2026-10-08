@@ -27,7 +27,7 @@ never prints a value.
 | `SEC_USER_AGENT` | **yes** (EDGAR) | `Name email@example.com`, sent on every SEC request (fair-access policy). Unset: EDGAR jobs refuse to start, no request is sent. |
 | `BLS_CONTACT_EMAIL` | **yes** (BLS calendar) | www.bls.gov answers 403 unless the User-Agent carries a contact email; usfin sends `usfin/<version> (<email>)`. |
 | `BLS_API_KEY` | no | BLS v2 API. Without it the keyless v1 API is used (daily cap; release-day retries every 15 min instead of 10). |
-| `FRED_API_KEY` | no | ALFRED backfill of BLS first-published history (slice S18 — blocked until it is set). |
+| `FRED_API_KEY` | no | `usfin bls alfred-backfill` (BLS first-published history from ALFRED); never archived or logged. |
 | `ALERT_WEBHOOK_URL` | no | Each new alert is POSTed here as JSON. |
 | `USFIN_DB` | no | DuckDB file, default `data/usfin.duckdb`. |
 | `USFIN_RAW` | no | Raw store, default `raw/`. |
@@ -160,10 +160,23 @@ a load (a stop is clean; the next run resumes by member CRC). `usfin raw prune -
 `edgar_bulk`) keeps the newest two ZIPs per dataset. `usfin doctor` prints free space against the
 floor and the newest bulk projection.
 
-## Blocked: ALFRED backfill (S18)
+## ALFRED backfill (BLS history)
 
-The ALFRED backfill of BLS first-published values needs a free FRED API key. To unblock it:
+BLS's API serves only today's numbers, so the values as they were first published (and every
+revision since) come from ALFRED, the St. Louis Fed's archive of FRED vintages. With a free key
+from <https://fred.stlouisfed.org/docs/api/api_key.html> as `FRED_API_KEY=<key>` in `.env`:
 
-1. Request a key at <https://fred.stlouisfed.org/docs/api/api_key.html>.
-2. Add `FRED_API_KEY=<key>` to `.env` (`usfin doctor` should then show it `set`).
-3. Re-run the slice: `/plan-build docs/plans/us-fin-ingest.md --slice S18`.
+```sh
+uv run usfin bls alfred-backfill
+```
+
+sends one request per `config/bls.yaml` series (its `fred` ID, every vintage), archives each as raw
+dataset `alfred_observations` (the key is replaced by `REDACTED` in the stored URL and in logs), and
+rebuilds `bls_observation` by reparsing `bls`: ALFRED vintages first, as `source='alfred'` rows
+first seen at their `realtime_start` 00:00 New York, only those before the first BLS response for
+the series and rounded to its published decimals; then BLS's own responses, which add a version only
+where they differ. On 2026-10-08 that was 26 051 ALFRED rows (payrolls back to 1939, vintages from
+1955) and 13 BLS rows (footnotes ALFRED does not carry), in about 20 s; a rerun changes nothing.
+Without `FRED_API_KEY` the command exits 1 and sends nothing. Then, e.g.,
+`SELECT * FROM bls_as_of(DATE '2020-06-01') WHERE series_id = 'LNS14000000'` gives April 2020's
+unemployment rate as first printed (14.7), and `/series/bls/<id>?as_of=YYYY-MM-DD` shows it.

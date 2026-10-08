@@ -94,6 +94,9 @@ class Job:
     """In `usfin serve`, after each run: `retry(con, settings, now)` returns when to run the job
     again today (a one-shot `<name>_retry`), or None (and raises its own alerts when it gives up).
     BLS: a release day whose new period has not arrived yet."""
+    replay_first: tuple[str, ...] = ()
+    """Raw datasets reparse replays before the others (each group in `fetched_at` order): BLS
+    replays ALFRED's back-dated vintages before its own responses (S18)."""
 
     def key_list(self, ctx: "JobContext") -> list[str]:
         return list(self.keys(ctx) if callable(self.keys) else self.keys)
@@ -518,8 +521,8 @@ def reparse(
     """Rebuild `job`'s normalized rows from its stored raw responses; no HTTP, all or nothing.
 
     Selects `raw_response` rows whose dataset is in `job.parsers` (fetched on or after `since`,
-    a New York date, if given) in `fetched_at` order. Pruned rows are skipped with a warning and
-    their derived rows kept. A parser error rolls the whole reparse back and raises `ReparseFailed`.
+    a New York date, if given) in `fetched_at` order, `job.replay_first` datasets first. Pruned
+    rows are skipped with a warning and their derived rows kept. A parser error rolls the whole reparse back and raises `ReparseFailed`.
     """
     now = now or datetime.now(UTC)
     parsers = job.parser_map(settings)
@@ -535,6 +538,7 @@ def reparse(
         sql += " AND fetched_at >= ?"
         params.append(_since_utc(since))
     selected = con.execute(sql + " ORDER BY fetched_at, id", params).fetchall()
+    selected.sort(key=lambda row: row[1] not in job.replay_first)  # stable: keeps fetched_at order
     skipped = [raw_id for raw_id, _, pruned_at in selected if pruned_at is not None]
     for raw_id in skipped:
         log.warning("reparse %s: raw_response %s was pruned; skipped", job.name, raw_id)

@@ -9,3 +9,6 @@ buckets:
     rate: 8
     headers:
       Accept-Encoding: gzip, deflate
+  fred:
+    hosts: [api.stlouisfed.org]
+    rate: 2  # FRED allows 120 requests a minute
