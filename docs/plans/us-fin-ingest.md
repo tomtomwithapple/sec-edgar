@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S32 done — S18 blocked (FRED_API_KEY) — next: S33
+Status: S32 done — S18 blocked (FRED_API_KEY) — next: S36 (fix found by S32), then S33
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -1606,6 +1606,13 @@ Green: `doctor.py`, `deploy/com.tuntun.usfin.serve.plist.example`, README (setup
 Run: `uv run usfin doctor`; `plutil -lint deploy/*.plist.example`; `usfin serve` for one scheduled feed fire, then `usfin jobs`.
 Done when: C18 covered; every job has at least one ok live run.
 
+### S36 — Fix: reconcile never requests an unpublished daily index
+Depends on: S23 (found by S32's run)
+Red: `tests/test_edgar_dailyindex.py` — a run before today's index can exist (e.g. 03:47 ET) does not request `master.<today>.idx`; a 403 on a `daily-index/` path for today or a future day is treated as "not published yet" (no SEC block window, no failed run), while a 403 anywhere else still opens the block; catch-up at server start before publication time leaves the watermark unchanged and sends no request for today.
+Green: in `sources/edgar/dailyindex.py` (How › SEC EDGAR › Daily index reconcile): request today's file only after a configured publication time (measure when SEC publishes it, e.g. from `Last-Modified` of a recent day, and record it), and classify the daily-index 403 for not-yet-published days in `http.py`/the job without weakening C5.
+Run: `uv run usfin run edgar_reconcile` live now (outside publication time if possible) — no 403, no block; `usfin jobs` shows it ok; then confirm a normal EDGAR request still works.
+Done when: a server start at any hour never opens the SEC block through the reconcile; C5 still holds for real 403s.
+
 ## Progress
 
 | Slice | Status | Date | Commit | Tests | Run showed |
@@ -1646,4 +1653,5 @@ Done when: C18 covered; every job has at least one ok live run.
 | S33 UI: EDGAR company and screen | todo | | | | |
 | S34 UI: unmatched symbols | todo | | | | |
 | S35 Ops: doctor, launchd, README, live smoke | todo | | | | |
+| S36 Fix: reconcile never requests an unpublished daily index | todo | | | | |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
