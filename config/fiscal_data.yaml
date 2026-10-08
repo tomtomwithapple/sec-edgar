@@ -1,1 +1,19 @@
-# Filled in by the slice that uses it (docs/plans/us-fin-ingest.md).
+# Treasury Fiscal Data dataset registry (docs/plans/us-fin-ingest.md, How > Treasury Fiscal Data).
+# Each entry: name (table and raw dataset fd_<name>), endpoint (under
+# https://api.fiscaldata.treasury.gov/services/api/fiscal_service), date_field (default
+# record_date), lookback_days (default 10), backfill_from (default 2000-01-01), and - added by
+# S8 once confirmed against a live response - pk and jump_fields.
+datasets:
+  - name: dts_operating_cash
+    endpoint: v1/accounting/dts/operating_cash_balance
+  - name: debt_to_penny
+    endpoint: v2/accounting/od/debt_to_penny
+  - name: auctions
+    endpoint: v1/accounting/od/auctions_query
+    date_field: auction_date   # record_date is the issue date and runs ahead
+  - name: avg_interest_rates
+    endpoint: v2/accounting/od/avg_interest_rates
+  - name: mts_table_1
+    endpoint: v1/accounting/mts/mts_table_1
+  - name: rates_of_exchange
+    endpoint: v1/accounting/od/rates_of_exchange

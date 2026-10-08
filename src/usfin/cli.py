@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import duckdb
 import typer
@@ -8,6 +8,7 @@ import typer
 from usfin import __version__, calendars, jobs, raw, store
 from usfin import http as usfin_http
 from usfin.settings import load_settings
+from usfin.sources import fiscal
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -213,3 +214,51 @@ def http_get(
     typer.echo(f"status: {response.status_code}")
     typer.echo(f"raw_id: {raw_id}")
     typer.echo(f"bytes: {len(response.content)}")
+
+
+fd_app = typer.Typer(no_args_is_help=True, help="Treasury Fiscal Data.")
+app.add_typer(fd_app, name="fd")
+
+
+@fd_app.command("probe")
+def fd_probe(
+    name: str = typer.Argument(..., help="Registry dataset name (config/fiscal_data.yaml)."),
+    since: str | None = typer.Option(
+        None, help="First date (YYYY-MM-DD) on the dataset's date field; default lookback_days before today (ET)."
+    ),
+) -> None:
+    """Fetch NAME from SINCE (all pages, archived as fd_probe) and print rows, columns, types."""
+    settings = load_settings()
+    datasets = fiscal.load_datasets(settings.config_dir)
+    if name not in datasets:
+        known = ", ".join(datasets) or "none configured"
+        raise typer.BadParameter(f"unknown dataset {name!r} (known: {known})", param_hint="NAME")
+    dataset = datasets[name]
+    if since is None:
+        today = datetime.now(jobs.ET).date()
+        start = today - timedelta(days=dataset.lookback_days)
+    else:
+        try:
+            start = date.fromisoformat(since)
+        except ValueError:
+            raise typer.BadParameter(
+                f"{since!r} is not a YYYY-MM-DD date", param_hint="--since"
+            ) from None
+    with _db_session(apply_migrations=True) as con, usfin_http.Client(con) as client:
+        try:
+            pages = fiscal.fetch(client, dataset, start, raw_dataset="fd_probe")
+        except (usfin_http.HttpError, fiscal.FiscalError) as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from None
+    rows = [row for page in pages for row in page.rows]
+    types = pages[-1].types
+    typer.echo(f"{dataset.name}: {fiscal.page_url(dataset, start, page=1)}")
+    typer.echo(f"rows: {len(rows)} (pages {len(pages)}, raw_ids {[p.raw_id for p in pages]})")
+    if rows:
+        dates = [r[dataset.date_field] for r in rows if r.get(dataset.date_field) is not None]
+        if dates:
+            typer.echo(f"{dataset.date_field}: {min(dates)} .. {max(dates)}")
+    typer.echo(f"columns: {len(types)}")
+    for col, fd_type in types.items():
+        sample = rows[-1].get(col) if rows else None
+        typer.echo(f"{col}\t{fd_type}\t{fiscal.sql_type(fd_type)}\t{sample!r}")

@@ -1,6 +1,6 @@
 # US financial data ingestion (usfin)
 
-Status: S6 done — next: S7
+Status: S7 done — next: S8
 Goal: One local app that fetches five US public data sources (SEC EDGAR, Treasury Fiscal Data,
 BLS, TreasuryDirect, Nasdaq Trader) on schedule, stores every response raw, normalizes into DuckDB
 point-in-time, and shows job status, alerts and the data in a small local web UI.
@@ -386,6 +386,21 @@ is created from its dataTypes on first parse; an unseen column is added with `AL
 COLUMN` and raises `schema_drift` (C16). Job `fiscal` runs every registry entry; watermark key =
 registry name; one dataset failing fails the run but the others commit. First run with no
 watermark backfills from `backfill_from` (default 2000-01-01). Chained: `then: [auction_xcheck]`.
+*(Amended in S7.)* Client API in `usfin.sources.fiscal`: `load_datasets(config_dir)` reads
+`fiscal_data.yaml` as `datasets: [{name, endpoint, date_field, lookback_days, backfill_from, pk,
+jump_fields}]` into `Dataset`s (S7 lists the six names + endpoints + `auctions`' date field; S8
+adds `pk`/`jump_fields`); `since(ds, watermark, today)` = `backfill_from` with no watermark, else
+min(wm, today) − lookback; `page_url` builds `filter=…&sort=…&page%5Bnumber%5D=n&page%5Bsize%5D=s`;
+`fetch(client, ds, start) -> [Page(raw_id, number, total_pages, types, rows)]` archives every page
+(source `fiscal`, dataset `fd_<name>`) and raises `FiscalError(raw_id)` on a non-200;
+`total-pages: 0` (no rows yet, e.g. MTS before its release) is one request and still carries the
+full `dataTypes`, so S8 can create a table from an empty page; `cast_page(doc)` /
+`sql_type(fd_type)` implement the type map; a column missing from `dataTypes` is kept as
+`STRING`. The six datasets use exactly `CURRENCY, CURRENCY0, DATE, DAY, INTEGER, MONTH, NUMBER,
+PERCENTAGE, QUARTER, STRING, YEAR`; some auction columns typed `STRING` upstream hold numbers
+(`price_per100`, `high_price`) and stay VARCHAR. `usfin fd probe <name> [--since]` fetches and
+prints rows, columns and types; it archives as raw dataset `fd_probe`, so `reparse fiscal` never
+replays probes.
 
 **TreasuryDirect.** Base `https://www.treasurydirect.gov/TA_WS/securities/`. Job
 `treasurydirect` (raw datasets `td_announced`, `td_auctioned`, `td_search`):
@@ -879,7 +894,7 @@ Done when: C18 covered; every job has at least one ok live run.
 | S4 Calendars | done | 2026-10-08 | ecfb40c | 25 new (test_calendars); suite 88 passed | `usfin calendar 2026-10-12` printed `Mon (Columbus Day)` federal closed, bond closed, nyse open; `… 2026-04-03` `Fri (Good Friday)` federal open, bond closed, nyse closed; `… 2026-11-11` Veterans Day federal/bond closed, nyse open; a bad date exits 2. `holidays.NYSE()` already has the 2018/2025 mourning closures, `holidays.US` has no executive-order federal closures (2025-01-09) — overrides file is where those go. Plan amended (Calendars): `Calendars` object from `load_calendars`, `any` calendar, override precedence (federal moves bond, bond wins), strict prev/next, computed Good Friday, `usfin calendar`. |
 | S5 Job runner, run log, watermarks | done | 2026-10-08 | e92cd24 | 19 new (test_jobs); suite 107 passed | On the real store, `USFIN_DEMO=1 usfin run _demo` printed `_demo #1 ok rows 6` and `usfin jobs` listed run #1 and `alpha`/`beta` = 2026-10-07 — the Mac clock read 2026-10-08 00:22 UTC, i.e. 20:22 ET on the 7th, so the ET-date cap held. With `USFIN_DEMO_FAIL=beta`: `#2 failed rows 3`, exit 1, error `beta: RuntimeError: …`; a later failing run moved `alpha`'s `updated_at` but left `beta`'s from the run before (C7). Four runs left 6 `demo_item` rows (upserts) and 8 `raw_response` rows over 2 blobs. With another python process holding `data/usfin.duckdb`, `USFIN_LOCK_WAIT=1 usfin run _demo` exited 1 after ~1.3 s with `database busy — …`, `(not logged)`, and no new `job_run` or watermark change. Without `USFIN_DEMO`, `usfin run _demo` exits 2 `unknown job`. Plan amended (Jobs): fetch is `fetch(ctx, key)` per watermark key (a per-job `fetch(ctx)` could not fail one key alone), `ctx.advance`, ET today, lock → no run row, `load_registry`/`_demo`. |
 | S6 Reparse and chaining | done | 2026-10-08 | af1bf5d | 19 new (test_reparse); suite 126 passed | On the real store (8 `_demo` raw rows from S5), `USFIN_DEMO=1 usfin reparse _demo` printed `_demo reparsed 8 raw responses, rows 24`, exit 0; `raw_response` (10), `job_run` (4), both watermarks and their `updated_at` unchanged, `demo_item` identical. After `DELETE FROM demo_item` the same command rebuilt all 6 rows. `--since 2026-10-08` reparsed 0 and `--since 2026-10-07` all 8: the blobs were fetched 2026-10-08 00:22 UTC = 10-07 ET, so `--since` reasons in New York dates. With another process holding the DB, `USFIN_LOCK_WAIT=1 usfin reparse _demo` exited 1 after ~1 s with `database busy — …`. Plan amended (Jobs): `Job.versioned` tables, one-transaction all-or-nothing reparse with `ReparseFailed`, `NetworkDisabled` transport, no `job_run` and no watermark move on reparse, pruned rows keep their derived history, depth-first chain run once per chain, failed child does not stop siblings, `usfin run` exits 1 if a chained run failed. |
-| S7 Fiscal Data client | todo | | | | |
+| S7 Fiscal Data client | done | 2026-10-08 | | 31 new (test_fiscal_client); suite 157 passed | `usfin fd probe debt_to_penny --since 2026-09-01` (live) printed 25 rows in 1 page, record_date 2026-09-01 .. 2026-10-06, 11 columns (`CURRENCY`→DECIMAL(24,4), `YEAR/QUARTER/MONTH/DAY/INTEGER`→BIGINT, `DATE`), exit 0 in ~3.5 s; `auctions` 48 rows with auction_date up to today 2026-10-08 while record_date reads 2026-10-13 (ahead, as planned) and today's auction has null results (the lookback picks them up); `mts_table_1 --since 2026-09-01` returned 0 rows, `total-pages: 0`, but full `dataTypes` (Sept MTS not out yet); an unknown name exits 2 listing the six. A one-off scan of the first 10 000 rows of every dataset from 1990 cast with no failure. Fixtures: 8 real responses (debt_to_penny 2 pages, the other five, MTS empty) recorded with the client's exact URLs; `auctions.json` lost only its unused `meta.labels`/`dataFormats`. No plan contradiction; How › Treasury Fiscal Data gains the client API, the registry YAML shape (endpoints now, pk in S8) and the `fd_probe` raw dataset. |
 | S8 Fiscal Data registry job | todo | | | | |
 | S9 Alerts | todo | | | | |
 | S10 Scheduler and usfin serve | todo | | | | |
