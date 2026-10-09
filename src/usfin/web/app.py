@@ -1,7 +1,8 @@
 """FastAPI app for `usfin serve`: the local web UI and its small JSON API.
 
-Pages: jobs `/`, `/alerts`, the series browser `/series…`, EDGAR `/edgar…` and `/screen`, and
-`/symbols/unmatched`.
+Pages: jobs `/`, `/alerts`, the series browser `/series…` (with the auction cross-check
+`/series/auctions/xcheck` and the BLS release calendar `/series/releases`), EDGAR `/edgar…` and
+`/screen`, and the symbols pages `/symbols/unmatched` and `/symbols/history`.
 
 `create_app(scheduler)` starts the scheduler and runs catch-up in the app's lifespan and shuts it
 down on exit (`manage=False` leaves both to the caller). Run-now only queues the job on the
@@ -35,7 +36,7 @@ from usfin.settings import ConfigError
 from usfin.sources import fiscal
 from usfin.sources.edgar import concepts as edgar_concepts
 from usfin.sources.edgar import frames as edgar_frames
-from usfin.web import charts, series
+from usfin.web import charts, checks, series
 from usfin.web import edgar as web_edgar
 from usfin.web import symbols as web_symbols
 from usfin.web.tables import (
@@ -357,6 +358,106 @@ def create_app(
             **context,
         )
 
+    @app.get("/series/auctions/xcheck")
+    def xcheck_page(request: Request) -> Response:
+        params = request.query_params
+        which = params.get("table", "pairs")
+        result = params.get("result", "open")
+        if which not in ("pairs", "summary"):
+            raise HTTPException(400, "table must be one of pairs, summary")
+        if result not in checks.RESULT_PICKS:
+            raise HTTPException(400, f"result must be one of {', '.join(checks.RESULT_PICKS)}")
+        with db() as con:
+            summary = checks.xcheck_summary(con)
+            rows = checks.xcheck_rows(con, result)
+        pairs = Table(f"auction_xcheck_{result}", checks.XCHECK_COLUMNS, rows)
+        if wants_csv(request):
+            if which == "summary":
+                return csv_response(
+                    Table("auction_xcheck_summary", checks.XCHECK_SUMMARY_COLUMNS, summary)
+                )
+            return csv_response(pairs)
+
+        def pick_href(r: str) -> str:
+            return "/series/auctions/xcheck" + ("" if r == "open" else f"?result={r}")
+
+        def table_csv(name: str) -> str:
+            return "/series/auctions/xcheck?" + urlencode(
+                {"result": result, "format": "csv", "table": name}
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "auction_xcheck.html",
+            {
+                "title": "Auction cross-check",
+                "nav": "series",
+                "table": pairs,
+                "summary": summary,
+                "results": checks.RESULTS,
+                "picks": checks.RESULT_PICKS,
+                "result": result,
+                "pick_href": pick_href,
+                "table_csv": table_csv,
+                "csv_href": csv_href(request),
+                "html_rows": HTML_ROWS,
+            },
+        )
+
+    @app.get("/series/releases")
+    def releases_page(request: Request) -> Response:
+        params = request.query_params
+        which = params.get("table", "releases")
+        when = params.get("when", "upcoming")
+        release = params.get("release") or None
+        if which not in ("releases", "summary"):
+            raise HTTPException(400, "table must be one of releases, summary")
+        if when not in checks.WHEN:
+            raise HTTPException(400, f"when must be one of {', '.join(checks.WHEN)}")
+        today = scheduler.clock().astimezone(ET).date()
+        with db() as con:
+            names = checks.release_names(con)
+            if release is not None and release not in names:
+                raise HTTPException(404, f"no BLS release named {release!r}")
+            rows = checks.releases(
+                con, settings.config_dir, today=today, when=when, release=release
+            )
+            summary = checks.release_summary(con, settings.config_dir, today=today)
+        stem = "_".join(["bls_releases", when, *([_slug(release)] if release else [])])
+        table = Table(stem, checks.RELEASE_COLUMNS, rows)
+        if wants_csv(request):
+            if which == "summary":
+                return csv_response(
+                    Table("bls_releases_summary", checks.RELEASE_SUMMARY_COLUMNS, summary)
+                )
+            return csv_response(table)
+
+        def href(**change: str) -> str:
+            query = {"when": when, "release": release or ""} | change
+            query = {k: v for k, v in query.items() if v and not (k == "when" and v == "upcoming")}
+            return "/series/releases" + (f"?{urlencode(query)}" if query else "")
+
+        def table_csv(name: str) -> str:
+            query = {k: v for k, v in params.items() if k not in ("format", "table")}
+            return "/series/releases?" + urlencode({**query, "format": "csv", "table": name})
+
+        return templates.TemplateResponse(
+            request,
+            "bls_releases.html",
+            {
+                "title": "BLS releases",
+                "nav": "series",
+                "table": table,
+                "summary": summary,
+                "names": names,
+                "when": when,
+                "release": release,
+                "href": href,
+                "table_csv": table_csv,
+                "csv_href": csv_href(request),
+            },
+        )
+
     # --- EDGAR company and screen ---------------------------------------------------------
 
     @app.get("/edgar")
@@ -402,6 +503,7 @@ def create_app(
             per_frame = web_edgar.frame_values(con, cik, cmap)
             n_insider, insider_rows = web_edgar.insider(con, cik, limit=web_edgar.RECENT)
             n_stakes, stake_rows = web_edgar.stakes(con, cik, limit=web_edgar.RECENT)
+            n_party, party_rows = web_edgar.party(con, cik, limit=web_edgar.RECENT)
         facts = web_edgar.key_facts(per_frame, cmap)
         spec = cmap[chart_concept]
         how, points = web_edgar.chart_series(per_frame, chart_concept)
@@ -447,6 +549,9 @@ def create_app(
                 "n_insider": n_insider,
                 "stakes": stake_rows,
                 "n_stakes": n_stakes,
+                "party": party_rows,
+                "n_party": n_party,
+                "filing_href": web_edgar.filing_href,
                 "table_csv": table_csv,
                 "cmap": cmap,
                 "screen_href": lambda concept, period: (
@@ -588,6 +693,72 @@ def create_app(
                 "etf": etf,
                 "etf_raw": etf_raw,
                 "exchange": exchange,
+                "href": href,
+                "table_csv": table_csv,
+                "csv_href": csv_href(request),
+                "html_rows": web_symbols.HTML_ROWS,
+            },
+        )
+
+    @app.get("/symbols/history")
+    def symbol_history_page(request: Request) -> Response:
+        params = request.query_params
+        which = params.get("table", "events")
+        event = params.get("event", "all")
+        symbol = (params.get("symbol") or "").strip().upper() or None
+        if which not in ("events", "snapshots", "versions"):
+            raise HTTPException(400, "table must be one of events, snapshots, versions")
+        if which == "versions" and symbol is None:
+            raise HTTPException(400, "table=versions needs ?symbol=")
+        if event not in web_symbols.EVENT_PICKS:
+            raise HTTPException(400, f"event must be one of {', '.join(web_symbols.EVENT_PICKS)}")
+        with db() as con:
+            baseline = web_symbols.history_baseline(con)
+            counts = web_symbols.event_counts(con)
+            rows = web_symbols.history_events(con, event=event, symbol=symbol)
+            version_rows = web_symbols.versions(con, symbol) if symbol else []
+            snapshot_rows = web_symbols.snapshots(con)
+        stem = "_".join(["symbol_events", event, *([_slug(symbol)] if symbol else [])])
+        events = Table(stem, web_symbols.EVENT_COLUMNS, rows)
+        if wants_csv(request):
+            if which == "snapshots":
+                return csv_response(
+                    Table("symbol_snapshots", web_symbols.SNAPSHOT_COLUMNS, snapshot_rows)
+                )
+            if which == "versions":
+                return csv_response(
+                    Table(
+                        f"symbol_versions_{_slug(symbol or '')}",
+                        web_symbols.VERSION_COLUMNS,
+                        version_rows,
+                    )
+                )
+            return csv_response(events)
+
+        def href(**change: str) -> str:
+            query = {"event": event, "symbol": symbol or ""} | change
+            query = {k: v for k, v in query.items() if v and not (k == "event" and v == "all")}
+            return "/symbols/history" + (f"?{urlencode(query)}" if query else "")
+
+        def table_csv(name: str) -> str:
+            query = {k: v for k, v in params.items() if k not in ("format", "table")}
+            return "/symbols/history?" + urlencode({**query, "format": "csv", "table": name})
+
+        return templates.TemplateResponse(
+            request,
+            "symbols_history.html",
+            {
+                "title": f"{symbol} history" if symbol else "Symbol history",
+                "nav": "symbols",
+                "table": events,
+                "baseline": baseline,
+                "counts": counts,
+                "event": event,
+                "events": web_symbols.EVENT_PICKS,
+                "symbol": symbol,
+                "versions": version_rows,
+                "snapshots": snapshot_rows[: web_symbols.SNAPSHOT_ROWS],
+                "n_snapshots": len(snapshot_rows),
                 "href": href,
                 "table_csv": table_csv,
                 "csv_href": csv_href(request),

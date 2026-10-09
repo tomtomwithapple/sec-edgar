@@ -5,7 +5,7 @@
   <h1>{% if picked %}{{ label }}{% else %}Treasury auctions{% endif %}</h1>
   <a class="csv" href="{{ csv_href }}">CSV</a>
 </div>
-<p class="sub muted">From TreasuryDirect (<code>tsy_security</code>), by security type, term as auctioned and kind; a reopening's term (e.g. 9-Year 10-Month) is its own series.</p>
+<p class="sub muted">From TreasuryDirect (<code>tsy_security</code>), by security type, term as auctioned and kind; a reopening's term (e.g. 9-Year 10-Month) is its own series. <a href="/series/auctions/xcheck">Cross-check against Fiscal Data</a>.</p>
 {% if not picked %}
 <div class="scroll">
 <table>

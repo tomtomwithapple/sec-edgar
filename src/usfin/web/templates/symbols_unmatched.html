@@ -7,6 +7,7 @@
 {% if not rates %}
 <p class="notice warn">No open Nasdaq Trader symbols stored yet — run <code>usfin run symbols</code> (and <code>usfin run edgar_tickers</code> for the join).</p>
 {% else %}
+<p>See also: <a href="/symbols/history">listings, delistings and changes</a>.</p>
 <p class="muted">Open Nasdaq Trader symbols joined to active EDGAR tickers on <code>ticker_norm</code>. Non-ETFs come first: EDGAR's ticker map is mostly operating companies, so most ETF trusts are not in it and an unmatched ETF is expected, not a notation gap.</p>
 
 <h2>Match rate <a class="csv" href="{{ table_csv('rates') }}">CSV</a></h2>
@@ -54,7 +55,7 @@
   <tbody>
   {% for r in table.rows[:html_rows] %}
     <tr>
-      <td class="name">{{ r.symbol }}</td>
+      <td class="name"><a href="/symbols/history?symbol={{ r.symbol | urlencode }}">{{ r.symbol }}</a></td>
       <td>{{ r.exchange }}</td>
       <td>{{ "ETF" if r.etf else "" }}</td>
       <td class="wrap">{{ r.name }}</td>

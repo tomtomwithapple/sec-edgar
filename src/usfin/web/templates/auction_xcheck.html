@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › <a href="/series/auctions">Auctions</a> › Cross-check</p>
+<div class="head">
+  <h1>Auction cross-check</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="sub muted">Fiscal Data <code>fd_auctions</code> against TreasuryDirect <code>tsy_security</code>, paired on CUSIP and auction date: offering amount and the four results. <em>pending</em> = a value on one side only (not yet published by the other); <em>fd_only</em> / <em>td_only</em> = an auction in one source only, within their overlap.</p>
+{% if not summary %}
+<p class="notice warn">No cross-check stored yet — run <code>usfin run auction_xcheck</code> (after <code>usfin run fiscal</code> and <code>usfin run treasurydirect</code>).</p>
+{% else %}
+<h2>By security type <a class="csv" href="{{ table_csv('summary') }}">CSV</a></h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Type</th>{% for r in results %}<th class="num">{{ r }}</th>{% endfor %}<th class="num">Pairs</th><th>First</th><th>Last</th></tr></thead>
+  <tbody>
+  {% for s in summary %}
+    <tr{% if s.security_type == "all" %} class="total"{% endif %}>
+      <td class="name">{{ s.security_type }}</td>
+      {% for r in results %}<td class="num">{% if s[r] %}<a href="{{ pick_href(r) }}">{{ s[r] | num }}</a>{% else %}0{% endif %}</td>{% endfor %}
+      <td class="num">{{ s.pairs | num }}</td>
+      <td>{{ s.first | cell }}</td>
+      <td>{{ s.last | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<nav class="pick" aria-label="Result">
+  <span class="muted">Show:</span>
+  {% for p in picks %}<a href="{{ pick_href(p) }}"{% if p == result %} aria-current="true"{% endif %}>{{ "not matched" if p == "open" else p }}</a>{% endfor %}
+</nav>
+<h2>{{ table.rows | length | num }} {{ "pairs not matched" if result == "open" else "pairs" if result == "all" else result + " pairs" }} <a class="csv" href="{{ table_csv('pairs') }}">CSV</a></h2>
+{% if table.rows | length > html_rows %}<p class="muted">First {{ html_rows }} of {{ table.rows | length | num }}; the CSV has all of them.</p>{% endif %}
+{% if table.rows %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Auction</th><th>CUSIP</th><th>Type</th><th>Result</th><th>Field</th><th class="num">Fiscal Data</th><th class="num">TreasuryDirect</th></tr></thead>
+  <tbody>
+  {% for row in table.rows[:html_rows] %}
+    {% set fr = row.field_rows or [{}] %}
+    {% for f in fr %}
+    <tr>
+      {% if loop.first %}
+      <td rowspan="{{ fr | length }}">{{ row.auction_date | cell }}</td>
+      <td rowspan="{{ fr | length }}"><code>{{ row.cusip }}</code></td>
+      <td rowspan="{{ fr | length }}">{{ row.security_type | cell }}</td>
+      <td rowspan="{{ fr | length }}"><span class="status status-{{ 'failed' if row.result == 'mismatch' else 'ok' if row.result == 'matched' else 'skipped' }}">{{ row.result }}</span></td>
+      {% endif %}
+      <td>{{ f.field | cell }}</td>
+      <td class="num">{{ f.fiscal | cell }}</td>
+      <td class="num">{{ f.treasurydirect | cell }}</td>
+    </tr>
+    {% endfor %}
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">none — every compared pair agrees.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

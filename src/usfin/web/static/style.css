@@ -211,3 +211,6 @@ form.query input[type="text"], form.query select {
 }
 .pager { display: flex; gap: 14px; align-items: baseline; margin: 8px 0; }
 td code { white-space: nowrap; }
+
+tr.total td { font-weight: 600; border-top: 2px solid var(--border); }
+tr.hl-row td:first-child { box-shadow: inset 3px 0 0 var(--accent); }

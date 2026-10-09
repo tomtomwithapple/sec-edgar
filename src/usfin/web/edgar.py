@@ -57,7 +57,10 @@ SCREEN_COLUMNS = (
     "rank", "cik", "name", "value", "tag", "period_start", "period_end", "form", "filed", "accn",
 )  # fmt: skip
 FRAME_COLUMNS = ("rank", "cik", "entity_name", "loc", "value", "period_start", "period_end", "accn")
-TABLES = ("filings", "facts", "insider", "stakes")
+TABLES = ("filings", "facts", "insider", "stakes", "party")
+PARTY_COLUMNS = (
+    "accession_no", "form", "filed_at", "roles", "filed_under_cik", "filed_under", "source",
+)  # fmt: skip
 KINDS = ("annual", "quarter", "instant")
 
 
@@ -282,6 +285,36 @@ def stakes(
     return total, _dicts(con.execute(sql, params))
 
 
+def party(
+    con: duckdb.DuckDBPyConnection, cik: int, *, limit: int | None = None
+) -> tuple[int, list[dict[str, Any]]]:
+    """(count, rows): filings stored under another company that name this one as a party
+    (`edgar_filing_party`, S41) — e.g. a 13D/G an investor files about an issuer, seen from the
+    investor, or a Form 4 seen from the reporting owner. Roles as stored (feed roles, or
+    `index` / `submissions` from the role-less sources), comma-joined."""
+    base = (
+        "FROM edgar_filing_party p JOIN edgar_filing f USING (accession_no)"
+        " WHERE p.cik = ? AND f.cik <> ?"
+    )
+    total = con.execute(
+        f"SELECT count(DISTINCT accession_no) {base}", [cik, cik]
+    ).fetchone()[0]
+    sql = (
+        "SELECT f.accession_no, f.form, f.filed_at,"
+        " string_agg(DISTINCT p.role, ', ' ORDER BY p.role) AS roles,"
+        " f.cik AS filed_under_cik,"
+        " (SELECT arg_min(c.title, c.ticker) FROM edgar_company c WHERE c.cik = f.cik)"
+        " AS filed_under, f.source"
+        f" {base} GROUP BY ALL"
+        " ORDER BY f.filed_at DESC, f.accession_no DESC"
+    )
+    params: list[Any] = [cik, cik]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return total, _dicts(con.execute(sql, params))
+
+
 def csv_table(con: duckdb.DuckDBPyConnection, cik: int, which: str, cmap: ConceptMap) -> Response:
     """One of the company page's tables (`TABLES`), every row, as `edgar_<cik>_<table>.csv`."""
     name = f"edgar_{cik}_{which}"
@@ -291,8 +324,10 @@ def csv_table(con: duckdb.DuckDBPyConnection, cik: int, which: str, cmap: Concep
         table = Table(name, FACT_COLUMNS, key_facts(frame_values(con, cik, cmap), cmap))
     elif which == "insider":
         table = Table(name, INSIDER_COLUMNS, insider(con, cik)[1])
-    else:
+    elif which == "stakes":
         table = Table(name, STAKE_COLUMNS, stakes(con, cik)[1])
+    else:
+        table = Table(name, PARTY_COLUMNS, party(con, cik)[1])
     return csv_response(table)
 
 

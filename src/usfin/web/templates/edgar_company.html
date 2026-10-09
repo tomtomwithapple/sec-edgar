@@ -139,4 +139,30 @@
 <p class="muted">No Schedule 13D/G stakes stored with this company as subject.</p>
 {% endif %}
 </section>
+
+<section>
+<div class="head"><h2>Filings by others naming this company</h2><a class="csv" href="{{ table_csv('party') }}">CSV</a></div>
+{% if party %}
+<p class="muted">Filed under another CIK with this company as a party: an investor's 13D/G about an issuer, a reporting owner's Form 4.</p>
+{% if n_party > party | length %}<p class="muted">Newest {{ party | length }} of {{ n_party | num }}; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Filed</th><th>Form</th><th>Role</th><th>Filed under</th><th>Accession</th></tr></thead>
+  <tbody>
+  {% for r in party %}
+    <tr>
+      <td>{{ r.filed_at | cell }}</td>
+      <td>{{ r.form }}</td>
+      <td>{{ r.roles }}</td>
+      <td class="name wrap"><a href="/edgar/{{ r.filed_under_cik }}">{{ r.filed_under or r.filed_under_cik }}</a></td>
+      <td><a href="{{ filing_href(r.filed_under_cik, r.accession_no) }}">{{ r.accession_no }}</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No filings stored under another company that name this one.</p>
+{% endif %}
+</section>
 {% endblock %}

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/symbols/unmatched">Symbols</a> › {% if symbol %}<a href="/symbols/history">History</a> › {{ symbol }}{% else %}History{% endif %}</p>
+<div class="head">
+  <h1>{% if symbol %}{{ symbol }}: listing history{% else %}Symbol history{% endif %}</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+{% if not baseline %}
+<p class="notice warn">No symbol history stored yet — run <code>usfin run symbols</code> (one snapshot is the baseline; listings, delistings and changes appear from the next one on).</p>
+{% else %}
+<p class="sub muted">Diffed from Nasdaq Trader snapshots. Baseline (every symbol it listed, not counted as a listing):
+  {% for f, t in baseline.items() %}<code>{{ f }}</code> {{ t | cell }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  A change is a new name, ETF flag, market category or financial status; a move to another exchange is a delisting plus a listing.</p>
+
+<form class="query" method="get" action="/symbols/history">
+  <label for="symbol">Symbol</label>
+  <input id="symbol" name="symbol" value="{{ symbol or '' }}" placeholder="e.g. AAPL" size="10">
+  <label for="event">Event</label>
+  <select id="event" name="event">
+    {% for e in events %}<option value="{{ e }}"{% if e == event %} selected{% endif %}>{{ e }}{% if e != "all" %} ({{ counts[e] }}){% endif %}</option>{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+  {% if symbol or event != "all" %}<a href="/symbols/history">clear</a>{% endif %}
+</form>
+
+{% if symbol %}
+<h2>{{ versions | length }} stored versions <a class="csv" href="{{ table_csv('versions') }}">CSV</a></h2>
+{% if versions %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Exch.</th><th>From</th><th>To</th><th>Name</th><th>ETF</th><th>Category</th><th>Status</th><th>EDGAR</th></tr></thead>
+  <tbody>
+  {% for v in versions %}
+    <tr>
+      <td>{{ v.exchange }}</td>
+      <td>{{ v.valid_from | cell }}</td>
+      <td>{% if v.valid_to %}{{ v.valid_to | cell }}{% else %}<span class="status status-ok">listed</span>{% endif %}</td>
+      <td class="wrap">{{ v.name }}</td>
+      <td>{{ "ETF" if v.etf else "" }}</td>
+      <td>{{ v.market_category | cell }}</td>
+      <td>{{ v.financial_status | cell }}</td>
+      <td>{% if loop.first %}<a href="/edgar/{{ symbol | urlencode }}">look up</a>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">{{ symbol }} was never in a stored snapshot.</p>
+{% endif %}
+{% endif %}
+
+<h2>{{ table.rows | length | num }} {{ "events" if event == "all" else event }}{% if symbol %} for {{ symbol }}{% endif %} <a class="csv" href="{{ table_csv('events') }}">CSV</a></h2>
+{% if table.rows | length > html_rows %}<p class="muted">Newest {{ html_rows }} of {{ table.rows | length | num }}; the CSV has all of them.</p>{% endif %}
+{% if table.rows %}
+<div class="scroll">
+<table>
+  <thead><tr><th>When</th><th>Event</th><th>Symbol</th><th>Exch.</th><th>Name</th><th>ETF</th><th>Changed (before)</th></tr></thead>
+  <tbody>
+  {% for r in table.rows[:html_rows] %}
+    <tr>
+      <td>{{ r.at | cell }}</td>
+      <td><span class="status status-{{ 'ok' if r.event == 'listed' else 'failed' if r.event == 'delisted' else 'skipped' }}">{{ r.event }}</span></td>
+      <td class="name"><a href="{{ href(symbol=r.symbol, event='all') }}">{{ r.symbol }}</a></td>
+      <td>{{ r.exchange }}</td>
+      <td class="wrap">{{ r.name }}</td>
+      <td>{{ "ETF" if r.etf else "" }}</td>
+      <td class="wrap">{% if r.changed %}<code>{{ r.changed }}</code> <span class="muted">({{ r.before }})</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">none since the baseline</p>
+{% endif %}
+
+<h2>Snapshots <a class="csv" href="{{ table_csv('snapshots') }}">CSV</a></h2>
+{% if n_snapshots > snapshots | length %}<p class="muted">Newest {{ snapshots | length }} of {{ n_snapshots }}.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead><tr><th>File</th><th>Snapshot</th><th class="num">Rows</th><th class="num">Previous</th><th class="num">Change %</th><th>Diffed</th><th class="num">Opened</th><th class="num">Closed</th></tr></thead>
+  <tbody>
+  {% for s in snapshots %}
+    <tr>
+      <td><code>{{ s.file }}</code></td>
+      <td>{{ s.snapshot_at | cell }}</td>
+      <td class="num">{{ s.rows | num }}</td>
+      <td class="num">{{ s.previous_rows | num }}</td>
+      <td class="num">{% if s.pct_change is not none %}{{ "%.2f" | format(s.pct_change) }}{% endif %}</td>
+      <td>{% if s.diffed %}yes{% else %}<span class="status status-failed">gated</span>{% endif %}</td>
+      <td class="num">{{ s.opened | num }}</td>
+      <td class="num">{{ s.closed | num }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

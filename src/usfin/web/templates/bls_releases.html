@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › BLS releases</p>
+<div class="head">
+  <h1>BLS release calendar</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="sub muted">From the BLS release schedule (<code>bls_release</code>). A release that publishes a configured series is that series' due day: the <code>bls</code> job runs and retries on it.</p>
+{% if not names %}
+<p class="notice warn">No release calendar stored yet — run <code>usfin run bls_calendar</code>.</p>
+{% else %}
+<h2>Configured series <a class="csv" href="{{ table_csv('summary') }}">CSV</a></h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Release</th><th>Series</th><th>Next</th><th>Last</th><th class="num">Stored</th></tr></thead>
+  <tbody>
+  {% for s in summary %}
+    <tr>
+      <td class="name"><a href="{{ href(release=s.release_name, when='all') }}">{{ s.release_name }}</a></td>
+      <td class="wrap">{% for sid in s.series_ids %}<a href="/series/bls/{{ sid }}">{{ sid }}</a>{% if not loop.last %} {% endif %}{% endfor %}</td>
+      <td>{{ s.next | cell }}</td>
+      <td>{{ s.last | cell }}</td>
+      <td class="num">{{ s.releases }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<form class="query" method="get" action="/series/releases">
+  <label for="when">Show</label>
+  <select id="when" name="when">
+    {% for v, label in [("upcoming", "Upcoming"), ("past", "Past"), ("all", "All")] %}<option value="{{ v }}"{% if v == when %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <label for="release">Release</label>
+  <select id="release" name="release">
+    <option value="">All</option>
+    {% for n in names %}<option value="{{ n }}"{% if n == release %} selected{% endif %}>{{ n }}</option>{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<h2>{{ table.rows | length | num }} {{ when if when != "all" else "" }} releases{% if release %}: {{ release }}{% endif %} <a class="csv" href="{{ table_csv('releases') }}">CSV</a></h2>
+{% if table.rows %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Date</th><th>Time (ET)</th><th>Release</th><th>Series</th></tr></thead>
+  <tbody>
+  {% for r in table.rows %}
+    <tr{% if r.series_ids %} class="hl-row"{% endif %}>
+      <td>{{ r.release_date | cell }}</td>
+      <td>{{ r.released_et.strftime("%a %H:%M") }}</td>
+      <td class="wrap">{{ r.release_name }}</td>
+      <td class="wrap">{% for sid in r.series_ids %}<a href="/series/bls/{{ sid }}">{{ sid }}</a>{% if not loop.last %} {% endif %}{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">none</p>
+{% endif %}
+{% endif %}
+{% endblock %}

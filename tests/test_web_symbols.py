@@ -221,6 +221,16 @@ PAGES = {
         "/series/auctions",
         "/series/auctions?type=Note&term=10-Year&kind=nominal",
     ],
+    "/series/auctions/xcheck": [
+        "/series/auctions/xcheck",
+        "/series/auctions/xcheck?table=summary",
+        "/series/auctions/xcheck?result=all",
+    ],
+    "/series/releases": [
+        "/series/releases",
+        "/series/releases?table=summary",
+        "/series/releases?when=all&release=Consumer+Price+Index",
+    ],
     "/edgar/{key:path}": [f"/edgar/{APPLE}"]
     + [f"/edgar/{APPLE}?table={t}" for t in web_edgar.TABLES],
     "/screen": ["/screen?concept=revenue&period=CY2025"],
@@ -229,6 +239,12 @@ PAGES = {
         "/symbols/unmatched?table=rates",
         "/symbols/unmatched?table=unmatched&etf=1&exchange=P",
         "/symbols/unmatched?match=all",
+    ],
+    "/symbols/history": [
+        "/symbols/history",
+        "/symbols/history?table=snapshots",
+        "/symbols/history?symbol=AAPL&table=versions",
+        "/symbols/history?event=delisted",
     ],
 }
 """Every GET page route → URLs whose CSV is fetched. A new page needs an entry (or a place in
@@ -239,8 +255,8 @@ FORMS = {"/edgar"}
 
 @pytest.fixture(scope="module")
 def full(tmp_path_factory):
-    """One DB with a row for every page: a job run, an alert, BLS, Fiscal, auctions, EDGAR,
-    symbols."""
+    """One DB with a row for every page: a job run, an alert, BLS, Fiscal, auctions and their
+    cross-check, BLS releases, EDGAR, symbols and their history."""
     tmp = tmp_path_factory.mktemp("full")
     config = tmp / "config"
     shutil.copytree(REPO_CONFIG, config)
@@ -277,6 +293,18 @@ def full(tmp_path_factory):
         edgar_fx._fact(con, APPLE, edgar_fx.RFCC, 416.161e9, "2024-09-29", "2025-09-27",
                        "CY2025", filed="2025-10-31", accn=k25)  # fmt: skip
         edgar_fx._filing(con, k25, APPLE, "10-K", "2025-10-31")
+        con.execute(
+            "INSERT INTO auction_xcheck VALUES ('91282CAB9', '2026-08-12', 'mismatch', 'Note',"
+            " '{\"high_yield\": {\"fiscal\": \"4.125\", \"treasurydirect\": \"4.130\"}}')"
+        )
+        con.execute(
+            "INSERT INTO bls_release VALUES ('2026-10-15', 'Consumer Price Index',"
+            " '2026-10-15 12:30', 1)"
+        )
+        con.execute(
+            "INSERT INTO symbol_diff VALUES ('nasdaqlisted', ?, 2, NULL, NULL, NULL, true, 2, 0)",
+            [SEEN],
+        )
     s = scheduler.Scheduler(settings, jobs.Registry(), clock=lambda: NOW)
     yield TestClient(web.create_app(s, manage=False, ui_wait=0.3))
     s.shutdown()

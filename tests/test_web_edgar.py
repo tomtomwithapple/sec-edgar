@@ -318,6 +318,29 @@ def test_insider_and_stake_csvs(client):
     assert client.get(f"/edgar/{APPLE}?format=csv&table=nope").status_code == 400
 
 
+def test_filings_by_others_naming_the_company_are_listed_from_the_party_side(client, db):
+    g = "0000950123-26-004242"  # Berkshire's 13G about Apple, stored under Apple (the subject)
+    with store.session(db.db_path, wait=0) as con:
+        _filing(con, g, APPLE, "SCHEDULE 13G", "2026-08-14")
+        con.execute(
+            "INSERT INTO edgar_filing_party VALUES (?, 320193, 'Subject'), (?, 1067983, 'Filed by'),"
+            " (?, 1067983, 'index'), ('0000320193-25-000079', 320193, 'submissions')",
+            [g, g, g],
+        )
+    page = client.get(f"/edgar/{BRK}")
+    assert "Filings by others naming this company" in page.text
+    assert f'href="/edgar/{APPLE}">Apple Inc.</a>' in page.text
+    assert f"/Archives/edgar/data/{APPLE}/000095012326004242/{g}-index.htm" in page.text
+    rows = _csv(client.get(f"/edgar/{BRK}?format=csv&table=party"))
+    assert [(r["accession_no"], r["form"], r["roles"], r["filed_under_cik"]) for r in rows] == [
+        (g, "SCHEDULE 13G", "Filed by, index", str(APPLE))
+    ]
+    assert rows[0]["filed_under"] == "Apple Inc."
+    # Apple's own filings are not "by others" on Apple's page
+    assert _csv(client.get(f"/edgar/{APPLE}?format=csv&table=party")) == []
+    assert "No filings stored under another company" in client.get(f"/edgar/{APPLE}").text
+
+
 # --- screen ---------------------------------------------------------------------------------
 
 
