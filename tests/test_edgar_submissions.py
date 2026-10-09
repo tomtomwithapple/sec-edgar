@@ -359,6 +359,8 @@ def cli_env(settings, monkeypatch):
     monkeypatch.setenv("USFIN_CONFIG", str(settings.config_dir))
     monkeypatch.setenv("USFIN_LOCK_WAIT", "0")
     monkeypatch.setenv("SEC_USER_AGENT", UA)
+    # the CLI starts its run on the real clock, so archive on it too or `requests` counts 0
+    monkeypatch.setattr(raw, "_utcnow", lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 def test_cli_edgar_submissions_runs_the_job_for_the_given_cik(settings, fake, cli_env):
