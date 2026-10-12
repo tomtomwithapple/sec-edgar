@@ -136,3 +136,12 @@ jobs:
     alerts:
       row_count_swing: {pct: 2}    # rows vs the previous stored snapshot: stored, not diffed
       stale_watermark: {n: 1}      # no confirmed list over a whole day
+  alpaca_corp_actions:
+    cron: "45 7 * * *"             # Alpaca's corporate actions (/v1/corporate-actions), every
+                                   # type, process_date from watermark - 30 d to today + 90 d
+                                   # (a dividend's process_date is its payable date); actions
+                                   # are processed on weekdays only
+    calendar: nyse
+    due: nyse
+    alerts:
+      stale_watermark: {n: 2}      # no action processed over two NYSE days

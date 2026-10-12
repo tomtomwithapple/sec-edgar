@@ -152,6 +152,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.edgar.bulk",
     "usfin.sources.nasdaqtrader",
     "usfin.sources.alpaca.assets",
+    "usfin.sources.alpaca.corp_actions",
 )
 """Modules imported by `load_registry` so their jobs register (sources add themselves)."""
 
