@@ -141,3 +141,12 @@ jobs:
                                         # files are created ~03:03 ET, judged from the 07:00 fire
       stale_watermark: {n: 1}      # no new snapshot over a whole NYSE day
       row_count_swing: {pct: 2}    # rows vs the file's previous snapshot (none for the first)
+  alpaca_assets:
+    cron: "30 7 * * *"             # Alpaca's asset list (/v2/assets?asset_class=us_equity), one
+                                   # ~25 s call; a list identical to the newest snapshot is not
+                                   # stored again but still moves the watermark
+    calendar: any
+    due: any
+    alerts:
+      row_count_swing: {pct: 2}    # rows vs the previous stored snapshot: stored, not diffed
+      stale_watermark: {n: 1}      # no confirmed list over a whole day
