@@ -1,6 +1,6 @@
 # Alpaca market data (usfin)
 
-Status: S1 done — next: S2
+Status: S2 done — next: S3
 Goal: Add free Alpaca US market data (daily bars, the asset list, corporate actions) to usfin as
 new jobs next to EDGAR: archived raw first, stored point-in-time in `data/usfin.duckdb`,
 scheduled, and shown in the existing web UI.
@@ -239,7 +239,14 @@ raw_id) — only the tracked columns; churning fields (`easy_to_borrow`, `shorta
 fields, `attributes`) stay in the raw JSON only. ~12 M rows a year, narrow. Diffed into
 `alpaca_asset_history` (id, symbol, name, exchange, status, tradable, class, valid_from,
 valid_to) with an `alpaca_asset_diff` gate table, the `symbol_history` pattern; a swing beyond
-2 % stores but does not diff (A4). Watermark = newest `snapshot_at`.
+2 % stores but does not diff (A4). `snapshot_at` = the raw response's `fetched_at` (the list has
+no date). *Amended in S2:* a list identical in every tracked column to the newest stored
+snapshot is not stored again (so a rerun inserts 0; the table grows only on days the list
+changes, at most the ~12 M rows a year above), and the watermark = the newest `snapshot_at` that
+confirmed the list, stored or not, so a quiet day raises no `stale_watermark`. The snapshot table
+has no PK (014 pattern; a snapshot is written whole by one statement); history PK (id,
+valid_from). The list changes within minutes in the early morning ET (S2 Run: 06:38 vs 06:39 ET
+differed by 69 ids gone, 2 new, 48 changed), so the 07:30 ET run sees the day's refresh.
 
 **Corporate actions (`alpaca_corp_actions`).** GET `/v1/corporate-actions?start&end&limit=1000`
 (all types, follow `next_page_token`). `start`/`end` filter `process_date`. Daily window:
@@ -521,7 +528,7 @@ Done when: A10 full run recorded, A12 docs; every criterion A1-A12 checked.
 | Slice | Status | Date | Commit | Tests | Run showed |
 |-------|--------|------|--------|-------|------------|
 | S1 Settings, auth, buckets, doctor | done | 2026-10-12 | e906002 | 19 new (`tests/test_alpaca_client.py`), 2 edited (`test_doctor.py`: APCA keys isolated, `alpaca.yaml` listed); suite 779 passed | `usfin doctor` exit 0: `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY` `info set`, `hosts.yaml` and `alpaca.yaml` ok. `usfin http get https://paper-api.alpaca.markets/v2/clock --source alpaca` → 200, raw_id 1, 148 bytes (is_open, next_open, next_close, timestamp); key id and secret found in neither `raw_response` nor the blob. Finding: `usfin http get` let a `ConfigError` escape as a traceback (SEC host without `SEC_USER_AGENT` too); it now prints one `error:` line and exits 1. A 429 whose `X-Ratelimit-Reset` has already passed retries with no wait of its own (no 1 s backoff); `Retry-After` still wins when both are sent. |
-| S2 alpaca_assets | todo | | | | |
+| S2 alpaca_assets | done | 2026-10-12 | | 15 new (`tests/test_alpaca_assets.py`, fixture `tests/fixtures/alpaca/assets.json`: 49 objects byte for byte from the live list); suite 794 passed | Live `usfin run alpaca_assets`: one call, 14.6 MB, 33 564 assets, run 38 s (fetch ~23-31 s); first snapshot opened 33 564 history rows. Per exchange active/inactive (first snapshot): NASDAQ 5 626/1 326, NYSE 2 907/843, ARCA 2 754/471, BATS 1 659/137, AMEX 291/98, OTC 1 157/16 295. Finding: a rerun 29 s later (06:39 ET) got a *different* list, 33 497 assets (−0.20 %, inside the gate): 69 ids gone (55 OTC, 14 listed, all active-untradable), 2 new (PCG.PRX, WIZEY), 48 changed (tradable flips, renames); diffed: 50 opened, 117 closed. Alpaca refreshes the list in the early morning; 07:30 ET stays. A third run (28 s) found it identical: **inserted 0**, watermark moved. `usfin reparse alpaca_assets`: 3 raw responses, 67 061 rows rebuilt identically in 2.3 s, no request. Plan amended (How › Assets): an identical list is not stored again, watermark = newest confirming fetch, no snapshot PK. First live attempt failed with `ConnectError` (the local resolver briefly returned ISP block-page IPs for paper-api.alpaca.markets; resolved by itself within a minute). |
 | S3 alpaca_corp_actions | todo | | | | |
 | S4 Corp-action backfill | todo | | | | |
 | S5 Universe view | todo | | | | |
