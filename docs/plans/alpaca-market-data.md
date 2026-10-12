@@ -1,6 +1,6 @@
 # Alpaca market data (usfin)
 
-Status: review folded in — next: slicing
+Status: slicing done — next: S1
 Goal: Add free Alpaca US market data (daily bars, the asset list, corporate actions) to usfin as
 new jobs next to EDGAR: archived raw first, stored point-in-time in `data/usfin.duckdb`,
 scheduled, and shown in the existing web UI.
@@ -380,3 +380,156 @@ build ok; probed the live API).
 24. `-m live` runs other sources' live tests — fixed: path-restricted command.
 25. "One limiter per host" wording — fixed: per bucket, two buckets.
 26. Corp-action watermark capped at today vs future actions — fixed: documented in How.
+
+## Slices
+
+### S1 — Alpaca settings, auth headers, host buckets, doctor
+Depends on: none
+Red: `tests/test_alpaca_client.py` — requests to both Alpaca hosts carry `APCA-API-KEY-ID` /
+`APCA-API-SECRET-KEY` from Settings and other hosts don't; unset keys raise `ConfigError` before
+any request (job path and `usfin http get`); a 429 with `X-Ratelimit-Reset` waits until it; the
+key and secret strings appear nowhere in the raw store, `raw_response`, logs or errors after an
+archived request; doctor shows the keys as `info` set/unset and checks `config/alpaca.yaml`.
+Green: How › Auth and secrets, How › Rate limit; `settings.py`, `http.py`, `hosts.yaml`,
+`doctor.py`, `config/alpaca.yaml` (all keys of How with their defaults), `.env.example`.
+Run: `uv run usfin doctor` (keys `info` set) and `uv run usfin http get
+"https://paper-api.alpaca.markets/v2/clock"` answers 200 with the keys and is archived.
+Done when: A12 (keys, ConfigError, doctor) and the secret part of A1 hold; A10's limiter/429 part.
+
+### S2 — `alpaca_assets` job: snapshot, diff, history
+Depends on: S1
+Red: `tests/test_alpaca_assets.py` — a trimmed real fixture loads tracked columns into
+`alpaca_asset_snapshot`; a second identical snapshot inserts nothing; a changed status/name opens
+and closes `alpaca_asset_history` rows keyed by `id`; a > 2 % swing stores but doesn't diff;
+reparse rebuilds snapshot and history with no request.
+Green: How › Assets; migration `020_alpaca_asset.sql`; `sources/alpaca/assets.py`; register in
+`jobs.py`; `schedule.yaml` entry per A9.
+Run: `uv run usfin run alpaca_assets` live: rows per status/exchange, time; rerun inserts 0.
+Done when: A4, A1 (reparse) for assets, A9 entry for assets.
+
+### S3 — `alpaca_corp_actions` job: versioned actions, forward window
+Depends on: S1
+Red: `tests/test_alpaca_corp_actions.py` — fixtures for dividend, forward/reverse split, name
+change, cash merger (TWTR), worthless removal load into the promoted columns + `payload`;
+pagination via `next_page_token`; identical refetch inserts nothing; a changed payload inserts a
+version; the daily window is watermark − 30 d .. today + 90 d; watermark capped at today;
+`alpaca_corp_action_latest`; reparse.
+Green: How › Corporate actions (job part); migration `021_alpaca_corp_action.sql`;
+`sources/alpaca/corp_actions.py`; `schedule.yaml` entry per A9.
+Run: `uv run usfin run alpaca_corp_actions` live: actions per type in the window, pages, time.
+Done when: A5 for the daily job.
+
+### S4 — Corporate-action backfill from 2016
+Depends on: S3
+Red: `tests/test_alpaca_backfill_corp.py` — `usfin alpaca backfill corp-actions --from` walks
+month windows, resumes from its progress key after a stop, opens a DB session per window,
+and its progress raises no alert.
+Green: How › Corporate actions (backfill), How › Backfill (session per batch, separate job name
+`alpaca_corp_actions_backfill`); `cli.py`, `sources/alpaca/backfill.py`.
+Run: live backfill 2016-01-01..today; record actions per year/type, pages, time, DB growth.
+Done when: A5 from 2016, A10 resume for corp actions.
+
+### S5 — Universe view
+Depends on: S2, S4
+Red: `tests/test_alpaca_universe.py` — `alpaca_universe` holds listed active/inactive asset
+symbols, merger `acquiree_symbol`s (TWTR), worthless-removal symbols and renamed `old_symbol`s,
+each with its `source`; OTC-only symbols excluded; SIVB absent (documented gap).
+Green: How › Universe; migration `023_alpaca_universe.sql` (view).
+Run: count per `source` on the live worktree DB; TWTR in, SIVB out.
+Done when: A3.
+
+### S6 — `alpaca_bars` core: request, versioned insert, as-of
+Depends on: S1
+Red: `tests/test_alpaca_bars.py` — request pins `feed=sip&adjustment=raw&asof=-&limit=10000`,
+batches symbols and follows `next_page_token`; `t` 04:00Z/05:00Z → NY date; identical refetch
+inserts 0; a changed compared column inserts a version with `first_seen_at` = `fetched_at`;
+`alpaca_bar_as_of(ts)` and `alpaca_bar_latest`; dedupe test after mixed runs; no PK in the
+migration; reparse rebuilds.
+Green: How › Bars (table, insert, as-of); migration `022_alpaca_bar.sql`;
+`sources/alpaca/bars.py` with a `--symbols`-style key list for tests.
+Run: live fetch for AAPL, FB, META, METV, TWTR from 2016: counts match Why (FB 1 945, META 1 326
+with `asof=-`); rerun inserts 0.
+Done when: A2.
+
+### S7 — Daily bars job: schedule, alerts, new-symbol catch-up, revision check
+Depends on: S5, S6
+Red: `tests/test_alpaca_bars_job.py` — the job takes active universe symbols over watermark − 5
+.. today plus ≤ `new_symbol_cap` universe symbols with no bars (full history); schedule entry
+20:30 ET `nyse` with A9's rules and no `value_jump`; catch-up after a missed day.
+Green: How › Bars (daily job); `schedule.yaml`.
+Run: live `uv run usfin run alpaca_bars`; then measure and record bars changed between two
+fetches of the same day (and an 18:00 vs 20:30 fetch if the slice runs across them).
+Done when: A9 for bars, A2 revisions measured.
+
+### S8 — Bars backfill command
+Depends on: S7
+Red: `tests/test_alpaca_backfill_bars.py` — `usfin alpaca backfill bars [--from] [--symbols]`
+batches the universe, one DB session per batch (another connection can write between batches),
+progress under `alpaca_bars_backfill` (no alerts), resumes after a stop.
+Green: How › Backfill; `cli.py`, `sources/alpaca/backfill.py`.
+Run: live backfill of a 500-symbol sample: pages, time per page, rows, DB and raw growth;
+project the full run and record it.
+Done when: A10.
+
+### S9 — Security identity
+Depends on: S4, S6
+Red: `tests/test_alpaca_security.py` — fixture-built bars + actions + assets: lookups return
+exactly A7's answers for META, FB, METV, TWTR, IBTA; gap split at > `gap_sessions`; the flat
+META 2022-01-31..06-08 segment is its own key.
+Green: How › Identity; migration `024_alpaca_security.sql` (views/macros).
+Run: live lookups for the same five on the worktree DB.
+Done when: A7.
+
+### S10 — Adjusted prices
+Depends on: S9
+Red: `tests/test_alpaca_adjusted.py` — AAPL fixture across 2020-08-31 has no jump; reverse split;
+dividend factor uses the last close before ex_date; factors chain across the FB → META rename;
+live test (`-m live`) compares AAPL, MSFT, KO with `adjustment=all` within 0.5 %.
+Green: How › Adjusted prices; migration `025_alpaca_adjusted.sql`.
+Run: live check output (max relative error per symbol).
+Done when: A6.
+
+### S11 — UI: /prices and /prices/universe
+Depends on: S10
+Red: `tests/test_web_prices.py` — `/prices?symbol=META` renders the chained series with an
+adjusted/unadjusted toggle, table and CSV; `/prices/universe` filters status, exchange, delisted,
+matched; nav links; both routes in `PAGES` of `tests/test_web_symbols.py`.
+Green: How › UI; `web/prices.py`, `web/app.py`, templates, `base.html`.
+Run: `uv run usfin serve`, open both pages for META, TWTR; CSV downloads.
+Done when: A11.
+
+### S12 — EDGAR link
+Depends on: S11
+Red: `tests/test_web_edgar_prices.py` — an active security's symbol joins via `ticker_norm` to
+its CIK; the EDGAR company page shows latest close and a 1-year chart; delisted securities are
+not joined; `/prices/universe?matched=` works.
+Green: How › EDGAR link; `web/edgar.py`, the EDGAR template.
+Run: `uv run usfin run edgar_tickers` once in the worktree, then the AAPL EDGAR page.
+Done when: A8.
+
+### S13 — Full backfill, docs, close-out
+Depends on: S8, S12
+Red: `tests/test_readme_alpaca.py` (or the repo's doc-check pattern if one exists) — README
+documents keys, jobs, backfill commands and pages; `.env.example` lists the keys.
+Green: README, `.env.example`; run the full bars backfill in the worktree.
+Run: full `usfin alpaca backfill bars`: total rows, symbols, time, DB and raw size; `usfin jobs`
+shows the three jobs ok; the gate passes.
+Done when: A10 full run recorded, A12 docs; every criterion A1-A12 checked.
+
+## Progress
+
+| Slice | Status | Date | Commit | Tests | Run showed |
+|-------|--------|------|--------|-------|------------|
+| S1 Settings, auth, buckets, doctor | todo | | | | |
+| S2 alpaca_assets | todo | | | | |
+| S3 alpaca_corp_actions | todo | | | | |
+| S4 Corp-action backfill | todo | | | | |
+| S5 Universe view | todo | | | | |
+| S6 Bars core | todo | | | | |
+| S7 Daily bars job | todo | | | | |
+| S8 Bars backfill command | todo | | | | |
+| S9 Security identity | todo | | | | |
+| S10 Adjusted prices | todo | | | | |
+| S11 UI pages | todo | | | | |
+| S12 EDGAR link | todo | | | | |
+| S13 Full backfill, docs | todo | | | | |
