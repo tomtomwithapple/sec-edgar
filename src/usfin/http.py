@@ -22,6 +22,12 @@ www.bls.gov (the release calendar; not api.bls.gov) answers 403 to any User-Agen
 contact email, and also to one that carries a URL (probed 2026-10-08), so requests to it send
 `usfin/<version> (<BLS_CONTACT_EMAIL>)`; without that setting → `ConfigError`, no request.
 
+The two Alpaca hosts (`ALPACA_HOSTS`) get `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY` from Settings
+on every request, and no other host does; with either key unset → `ConfigError`, no request. The
+headers are never archived: the raw store keeps the redacted URL, body, status and content type,
+and the request hash covers method, URL and body only. A 429 without `Retry-After` but with
+Alpaca's `X-Ratelimit-Reset` (epoch seconds) waits until that instant (alpaca-market-data S1).
+
 A secret query parameter (`api_key`, FRED/ALFRED's key, S18) never leaves the process except to
 its host: `redact` replaces its value with `REDACTED` in the archived URL, the request hash, every
 error message and httpx's own `HTTP Request:` log line.
@@ -51,6 +57,7 @@ TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 USFIN_USER_AGENT = f"usfin/{__version__} (+https://github.com/tomtomtomdev/sec-edgar)"
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 BLS_WWW_HOSTS = frozenset({"www.bls.gov"})
+ALPACA_HOSTS = frozenset({"data.alpaca.markets", "paper-api.alpaca.markets"})
 _EMAIL = re.compile(r"[^@\s()<>/]+@[^@\s()<>/]+\.[^@\s()<>/]+")
 ET = ZoneInfo("America/New_York")
 _SECRET_PARAM = re.compile(r"(?<=[?&]api_key=)[^&#\s\"']+")
@@ -132,6 +139,14 @@ def _retry_after(response: httpx.Response) -> float | None:
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     return max(0.0, (when - _wall_now()).total_seconds())
+
+
+def _ratelimit_reset(response: httpx.Response) -> float | None:
+    """Seconds until Alpaca's `X-Ratelimit-Reset` (epoch seconds), 0 if passed; None if absent."""
+    value = (response.headers.get("X-Ratelimit-Reset") or "").strip()
+    if not value.isdigit():
+        return None
+    return max(0.0, int(value) - _wall_now().timestamp())
 
 
 def unpublished_daily_index(url: httpx.URL | str, today: date) -> bool:
@@ -220,6 +235,7 @@ class Client:
             **policy.headers,
             "User-Agent": self._user_agent(host, sec),
             **(headers or {}),
+            **self._alpaca_auth(host),
         }
         request = self._http.build_request(
             method, url, params=params, headers=req_headers, json=json, data=data
@@ -250,6 +266,8 @@ class Client:
             if response.status_code in _RETRY_STATUSES and attempt < MAX_TRIES:
                 backoff = BACKOFF_BASE * 2 ** (attempt - 1)
                 retry_after = _retry_after(response)
+                if retry_after is None:
+                    retry_after = _ratelimit_reset(response)
                 response.close()
                 self._sleep(retry_after if retry_after is not None else backoff)
                 continue
@@ -298,6 +316,27 @@ class Client:
                 )
             return raw_id, response
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _alpaca_auth(self, host: str) -> dict[str, str]:
+        if host not in ALPACA_HOSTS:
+            return {}
+        missing = [
+            name
+            for name, value in (
+                ("APCA_API_KEY_ID", self.settings.apca_api_key_id),
+                ("APCA_API_SECRET_KEY", self.settings.apca_api_secret_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigError(
+                f"{' and '.join(missing)} not set; refusing to request {host} "
+                "(add the Alpaca paper account's keys to the environment or .env)"
+            )
+        return {
+            "APCA-API-KEY-ID": self.settings.apca_api_key_id,
+            "APCA-API-SECRET-KEY": self.settings.apca_api_secret_key,
+        }
 
     def _user_agent(self, host: str, sec: bool) -> str:
         if sec:

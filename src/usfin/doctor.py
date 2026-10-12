@@ -4,8 +4,9 @@ One line per check, `<status> <name> <detail>`, status `ok`, `info`, `warn` or `
 command exits 1 when any check fails. It reports:
 
 - every env var usfin reads, as set or unset — **never a value** for the secrets
-  (`SEC_USER_AGENT`, `BLS_CONTACT_EMAIL`, `BLS_API_KEY`, `FRED_API_KEY`, `ALERT_WEBHOOK_URL`);
-  paths and numbers (`USFIN_*`) show their effective value. A required one unset fails;
+  (`SEC_USER_AGENT`, `BLS_CONTACT_EMAIL`, `BLS_API_KEY`, `FRED_API_KEY`, `ALERT_WEBHOOK_URL`,
+  `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`); the Alpaca keys are `info` set or unset (the Alpaca
+  jobs refuse without them, the rest of usfin does not need them); paths and numbers (`USFIN_*`) show their effective value. A required one unset fails;
 - each config file: present, and loadable by the loader that uses it;
 - the DB path, its size and schema version, and whether another process holds its lock — read
   with one read-only open, no lock wait (a held lock is normal while `usfin serve` runs a job, so
@@ -24,7 +25,7 @@ import duckdb
 
 from usfin import alerts, calendars, ratelimit, scheduler, store
 from usfin.settings import Settings
-from usfin.sources import bls, fiscal
+from usfin.sources import alpaca, bls, fiscal
 from usfin.sources.edgar import bulk, concepts, dailyindex, feed
 
 _PID = re.compile(r"\(PID (\d+)\)")
@@ -47,6 +48,8 @@ class EnvVar:
     required: bool
     use: str
     default: str | None = None
+    status: str | None = None
+    """Fixed status whatever the state (the Alpaca keys: always `info`)."""
 
 
 ENV: tuple[EnvVar, ...] = (
@@ -55,6 +58,8 @@ ENV: tuple[EnvVar, ...] = (
     EnvVar("BLS_API_KEY", True, False, "BLS v2 (keyless v1 with 15-min retries otherwise)"),
     EnvVar("FRED_API_KEY", True, False, "ALFRED backfill of BLS first prints (usfin bls alfred-backfill)"),
     EnvVar("ALERT_WEBHOOK_URL", True, False, "alerts POSTed as JSON"),
+    EnvVar("APCA_API_KEY_ID", True, False, "Alpaca market data jobs (key id)", status="info"),
+    EnvVar("APCA_API_SECRET_KEY", True, False, "Alpaca market data jobs (secret)", status="info"),
     EnvVar("USFIN_DB", False, False, "DuckDB file", "data/usfin.duckdb"),
     EnvVar("USFIN_RAW", False, False, "raw responses dir", "raw"),
     EnvVar("USFIN_CONFIG", False, False, "config dir", "config"),
@@ -82,6 +87,7 @@ CONFIG: Mapping[str, Callable[[Path], Any]] = {
     "edgar.yaml": _edgar,
     "concepts.yaml": concepts.load_concepts,
     "schedule.yaml": _schedule,
+    "alpaca.yaml": alpaca.load_config,
 }
 
 
@@ -91,7 +97,7 @@ def env_checks(env: Mapping[str, str | None]) -> list[Check]:
         value = env.get(var.name) or None
         need = "required" if var.required else "optional"
         if var.secret:
-            status = "ok" if value else ("FAIL" if var.required else "info")
+            status = var.status or ("ok" if value else ("FAIL" if var.required else "info"))
             state = "set" if value else "unset"
             out.append(Check(status, var.name, f"{state} — {need}: {var.use}"))
         else:

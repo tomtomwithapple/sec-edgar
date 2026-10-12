@@ -28,6 +28,10 @@ class Settings:
     bulk_limit: int | None = None
     """`USFIN_BULK_LIMIT`: job `edgar_bulk` parses at most this many changed members per ZIP
     (spread evenly, as `usfin edgar backfill --limit`); unset = every changed member."""
+    apca_api_key_id: str | None = None
+    """`APCA_API_KEY_ID`: Alpaca key id, sent as a header to the Alpaca hosts only."""
+    apca_api_secret_key: str | None = None
+    """`APCA_API_SECRET_KEY`: Alpaca secret, sent as a header to the Alpaca hosts only."""
 
 
 def _merged(env_file: Path | None) -> Mapping[str, str | None]:
@@ -82,4 +86,6 @@ def load_settings(env_file: Path | None = None) -> Settings:
         alert_webhook_url=get("ALERT_WEBHOOK_URL"),
         min_free_gb=min_free_gb,
         bulk_limit=bulk_limit,
+        apca_api_key_id=get("APCA_API_KEY_ID"),
+        apca_api_secret_key=get("APCA_API_SECRET_KEY"),
     )
