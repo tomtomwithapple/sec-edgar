@@ -276,6 +276,9 @@ def http_get(
     with _db_session(apply_migrations=True) as con, usfin_http.Client(con) as client:
         try:
             raw_id, response = client.get(url, source=source, dataset=dataset)
+        except ConfigError as exc:
+            typer.echo(f"error: {usfin_http.redact(exc)}", err=True)
+            raise typer.Exit(1) from None
         except usfin_http.HttpError as exc:
             typer.echo(f"error: {exc}", err=True)
             if exc.raw_id is not None:

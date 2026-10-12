@@ -30,7 +30,7 @@ Usage = namedtuple("Usage", "total used free")
 ENV_KEYS = (
     "SEC_USER_AGENT", "BLS_API_KEY", "BLS_CONTACT_EMAIL", "FRED_API_KEY", "ALERT_WEBHOOK_URL",
     "USFIN_DB", "USFIN_RAW", "USFIN_CONFIG", "USFIN_LOCK_WAIT", "USFIN_MIN_FREE_GB",
-    "USFIN_BULK_LIMIT", "USFIN_DEMO",
+    "USFIN_BULK_LIMIT", "APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "USFIN_DEMO",
 )  # fmt: skip
 SECRET_UA = "Secret Person s3cret-ua@example.test"
 SECRET_MAIL = "hidden-mail@example.test"
@@ -126,7 +126,7 @@ def test_config_files_are_listed_and_a_missing_one_fails(home, disk):
     _db(home)
     out = _doctor()
     for name in ("hosts.yaml", "calendars.yaml", "fiscal_data.yaml", "bls.yaml", "edgar.yaml",
-                 "concepts.yaml", "schedule.yaml"):  # fmt: skip
+                 "concepts.yaml", "schedule.yaml", "alpaca.yaml"):  # fmt: skip
         assert _line(out.output, name).lstrip().startswith("ok")
     (home / "config" / "edgar.yaml").unlink()
     out = _doctor()

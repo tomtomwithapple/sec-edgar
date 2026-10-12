@@ -12,3 +12,11 @@ buckets:
   fred:
     hosts: [api.stlouisfed.org]
     rate: 2  # FRED allows 120 requests a minute
+  # Alpaca (free plan): 200 requests a minute per account; 3 rps = 180/min stays under it.
+  # The key headers are added by code from APCA_API_KEY_ID / APCA_API_SECRET_KEY, never here.
+  alpaca_data:
+    hosts: [data.alpaca.markets]
+    rate: 3
+  alpaca_trading:
+    hosts: [paper-api.alpaca.markets]
+    rate: 3
