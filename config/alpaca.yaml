@@ -1,0 +1,15 @@
+# Alpaca US market data (free plan). Keys: APCA_API_KEY_ID / APCA_API_SECRET_KEY in .env, never here.
+
+# Listed exchanges: their asset-list symbols (active or inactive) are in the bars universe;
+# every other asset (OTC) is kept in the asset snapshot only.
+exchanges: [NYSE, NASDAQ, AMEX, ARCA, BATS]
+# Symbols per bars request (measured and tuned in the bars slices).
+batch_size: 100
+# The daily bars job refetches from its watermark minus this many days.
+lookback_days: 5
+# First bar date requested: the free SIP feed starts on 2016-01-04.
+backfill_start: 2016-01-04
+# Universe symbols with no bars yet that one daily bars run backfills in full.
+new_symbol_cap: 200
+# NYSE sessions with no bar that split a symbol's history into two securities.
+gap_sessions: 60
