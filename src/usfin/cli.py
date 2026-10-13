@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -14,6 +15,8 @@ from usfin import __version__, alerts, calendars, jobs, raw, scheduler, store
 from usfin import http as usfin_http
 from usfin.settings import ConfigError, load_settings
 from usfin.sources import alfred, bls, bls_calendar, fiscal, nasdaqtrader, treasurydirect
+from usfin.sources.alpaca import backfill as alpaca_backfill
+from usfin.sources.alpaca import corp_actions as alpaca_corp_actions
 from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
 from usfin.sources.edgar import concepts as edgar_concepts
@@ -335,6 +338,67 @@ def fd_probe(
     for col, fd_type in types.items():
         sample = rows[-1].get(col) if rows else None
         typer.echo(f"{col}\t{fd_type}\t{fiscal.sql_type(fd_type)}\t{sample!r}")
+
+
+alpaca_app = typer.Typer(no_args_is_help=True, help="Alpaca market data.")
+app.add_typer(alpaca_app, name="alpaca")
+alpaca_backfill_app = typer.Typer(no_args_is_help=True, help="Alpaca backfills (resumable).")
+alpaca_app.add_typer(alpaca_backfill_app, name="backfill")
+
+
+@alpaca_backfill_app.command("corp-actions")
+def alpaca_backfill_corp_actions(
+    start: str = typer.Option(
+        alpaca_backfill.CORP_ACTIONS_START.isoformat(),
+        "--from",
+        help="First process_date (YYYY-MM-DD); default 2016-01-01.",
+    ),
+) -> None:
+    """Load corporate actions month by month from --from to today (one DB session per month)."""
+    try:
+        first = date.fromisoformat(start)
+    except ValueError:
+        raise typer.BadParameter(
+            f"{start!r} is not a YYYY-MM-DD date", param_hint="--from"
+        ) from None
+    settings = load_settings()
+    today = alpaca_backfill._now().astimezone(jobs.ET).date()
+    years: dict[int, list] = {}
+
+    def progress(w: alpaca_backfill.Window) -> None:
+        year = years.setdefault(w.lo.year, [0, 0, 0, 0, 0, Counter()])
+        year[0 if w.fetched else 1] += 1
+        year[2] += w.pages
+        year[3] += w.actions
+        year[4] += w.inserted
+        year[5].update(w.types)
+        if w.hi.month == 12 or w.hi == today:
+            f, s, pages, actions, inserted, types = year
+            per = ", ".join(f"{t} {n}" for t, n in types.most_common())
+            typer.echo(
+                f"{w.lo.year}: windows {f + s} (fetched {f}, skipped {s}), pages {pages},"
+                f" actions {actions}, inserted {inserted}" + (f" — {per}" if per else "")
+            )
+
+    started = time.monotonic()
+    try:
+        result = alpaca_backfill.corp_actions(
+            settings, start=first, today=today, progress=progress
+        )
+    except store.DatabaseLocked as exc:
+        typer.echo(f"database busy — another process holds the lock ({exc})", err=True)
+        raise typer.Exit(1) from None
+    except ConfigError as exc:
+        typer.echo(f"error: {usfin_http.redact(exc)}", err=True)
+        raise typer.Exit(1) from None
+    except (usfin_http.HttpError, alpaca_corp_actions.CorpActionError) as exc:
+        typer.echo(f"error: {exc} (rerun to resume)", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(
+        f"windows {result.windows} (fetched {result.fetched}, skipped {result.skipped}),"
+        f" pages {result.pages}, actions {result.actions}, inserted {result.inserted}"
+        f" in {time.monotonic() - started:.1f} s"
+    )
 
 
 td_app = typer.Typer(no_args_is_help=True, help="TreasuryDirect.")
