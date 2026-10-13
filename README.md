@@ -50,7 +50,7 @@ Run once, in this order, from the repo (`uv run usfin …`). Times measured on t
 | TreasuryDirect history | `usfin td backfill` (from 1979-10-31, resumable) | 565 monthly requests, 10 893 rows in 210 s |
 | BLS series (7, keyless) | `usfin run bls` | one query, 143 observations |
 | BLS release calendar | `usfin run bls_calendar` | 313 release dates (needs `BLS_CONTACT_EMAIL`) |
-| FRED series (18, every vintage) | `usfin run fred` | first load 21 vintage-date lists + 45 observation pages, 193 751 rows in ~3 min; repeat runs 36 requests, 0 new rows (needs `FRED_API_KEY`) |
+| FRED series (22, every vintage) | `usfin run fred` | first load of the 18 S42 series: 21 vintage-date lists + 45 observation pages, 193 751 rows in ~3 min; the 4 added later (DFII10, DTWEXBGS, NFCI, DCOILBRENTEU) 967 719 rows in 9 min, 928 189 of them NFCI (every weekly vintage re-estimates the whole history); repeat runs ~25 s, 0 new rows (needs `FRED_API_KEY`) |
 | EDGAR ticker map | `usfin run edgar_tickers` | 10 434 tickers / 8 016 CIKs in 1.3 s — run before the bulk submissions load, which keeps only these companies |
 | Nasdaq Trader symbols | `usfin run symbols` | 13 253 symbols in 5.5 s |
 | EDGAR bulk | see below | ~1 h in all |
@@ -165,8 +165,9 @@ floor and the newest bulk projection.
 ## FRED series
 
 `config/fred.yaml` lists the FRED series job `fred` keeps point in time (rates, spreads, VIX, Fed
-balance sheet, GDP, PCE prices, industrial production, retail sales, housing starts, sentiment,
-M2); add or remove an `id` and the next run picks it up. A series' first run loads every ALFRED
+balance sheet, real yield, broad dollar, financial conditions, Brent, GDP, PCE prices, industrial
+production, retail sales, housing starts, sentiment, M2);
+add or remove an `id` and the next run picks it up. A series' first run loads every ALFRED
 vintage, in real-time windows of at most 1 998 vintage dates (FRED refuses more than 2 000, and
 counts one more than it lists); later runs ask only for vintages since the newest stored one, for
 observation dates within `lookback_days` (5 years). Rows are `fred_observation`, one per distinct

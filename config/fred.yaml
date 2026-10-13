@@ -20,6 +20,12 @@ series:
   - id: MORTGAGE30US      # Freddie Mac 30-year fixed mortgage rate, weekly
   - id: WALCL             # Fed total assets, weekly
     jump_pct: 10
+  - id: DFII10            # 10-year TIPS real yield, daily
+  - id: DTWEXBGS          # Nominal broad US dollar index, daily
+    jump_pct: 5
+  - id: NFCI              # Chicago Fed National Financial Conditions Index, weekly
+  - id: DCOILBRENTEU      # Brent crude spot price, daily
+    jump_pct: 25
   # macro
   - id: GDP               # nominal GDP, quarterly
     jump_pct: 10
