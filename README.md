@@ -27,7 +27,7 @@ never prints a value.
 | `SEC_USER_AGENT` | **yes** (EDGAR) | `Name email@example.com`, sent on every SEC request (fair-access policy). Unset: EDGAR jobs refuse to start, no request is sent. |
 | `BLS_CONTACT_EMAIL` | **yes** (BLS calendar) | www.bls.gov answers 403 unless the User-Agent carries a contact email; usfin sends `usfin/<version> (<email>)`. |
 | `BLS_API_KEY` | no | BLS v2 API. Without it the keyless v1 API is used (daily cap; release-day retries every 15 min instead of 10). |
-| `FRED_API_KEY` | no | `usfin bls alfred-backfill` (BLS first-published history from ALFRED); never archived or logged. |
+| `FRED_API_KEY` | no | job `fred` (`config/fred.yaml` series) and `usfin bls alfred-backfill` (BLS first-published history from ALFRED); without it `fred` records `skipped`; never archived or logged. |
 | `ALERT_WEBHOOK_URL` | no | Each new alert is POSTed here as JSON. |
 | `USFIN_DB` | no | DuckDB file, default `data/usfin.duckdb`. |
 | `USFIN_RAW` | no | Raw store, default `raw/`. |
@@ -50,6 +50,7 @@ Run once, in this order, from the repo (`uv run usfin …`). Times measured on t
 | TreasuryDirect history | `usfin td backfill` (from 1979-10-31, resumable) | 565 monthly requests, 10 893 rows in 210 s |
 | BLS series (7, keyless) | `usfin run bls` | one query, 143 observations |
 | BLS release calendar | `usfin run bls_calendar` | 313 release dates (needs `BLS_CONTACT_EMAIL`) |
+| FRED series (18, every vintage) | `usfin run fred` | first load 21 vintage-date lists + 45 observation pages, 193 751 rows in ~3 min; repeat runs 36 requests, 0 new rows (needs `FRED_API_KEY`) |
 | EDGAR ticker map | `usfin run edgar_tickers` | 10 434 tickers / 8 016 CIKs in 1.3 s — run before the bulk submissions load, which keeps only these companies |
 | Nasdaq Trader symbols | `usfin run symbols` | 13 253 symbols in 5.5 s |
 | EDGAR bulk | see below | ~1 h in all |
@@ -102,6 +103,7 @@ uv run usfin reparse <job>    # rebuild a job's rows from stored raw responses, 
 | bls | 09:00, retry every 15 min to 12:00 on release days | federal |
 | treasurydirect | 14:00 | bond |
 | fiscal (+ auction_xcheck chained) | 17:00 | federal |
+| fred | 18:30 | federal |
 | edgar_reconcile (+ form4, sched13 chained) | 23:30 | federal |
 | edgar_bulk | Sun 03:00 | any |
 | bls_calendar | Mon 06:00 | any |
@@ -159,6 +161,20 @@ is checked again before a byte is written, and the guard is re-checked every 1 0
 a load (a stop is clean; the next run resumes by member CRC). `usfin raw prune --keep 2` (run by
 `edgar_bulk`) keeps the newest two ZIPs per dataset. `usfin doctor` prints free space against the
 floor and the newest bulk projection.
+
+## FRED series
+
+`config/fred.yaml` lists the FRED series job `fred` keeps point in time (rates, spreads, VIX, Fed
+balance sheet, GDP, PCE prices, industrial production, retail sales, housing starts, sentiment,
+M2); add or remove an `id` and the next run picks it up. A series' first run loads every ALFRED
+vintage, in real-time windows of at most 1 998 vintage dates (FRED refuses more than 2 000, and
+counts one more than it lists); later runs ask only for vintages since the newest stored one, for
+observation dates within `lookback_days` (5 years). Rows are `fred_observation`, one per distinct
+published value of a date, first seen at its vintage date 00:00 New York; `fred_as_of(DATE)` gives
+the values known that day, e.g.
+`SELECT * FROM fred_as_of(DATE '2020-05-01') WHERE series_id = 'GDPC1'` has Q1 2020 real GDP as
+first estimated (18 987.877). `/series/fred/<id>?as_of=YYYY-MM-DD` shows it. A series with
+`jump_pct` in `fred.yaml` raises `value_jump` past that change; the others are not checked.
 
 ## ALFRED backfill (BLS history)
 

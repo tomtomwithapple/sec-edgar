@@ -216,6 +216,7 @@ PAGES = {
     "/alerts": ["/alerts", "/alerts?all=1"],
     "/series": ["/series"],
     "/series/bls/{series_id}": [f"/series/bls/{CPI}", f"/series/bls/{CPI}?as_of=2026-01-31"],
+    "/series/fred/{series_id}": ["/series/fred/GDPC1", "/series/fred/GDPC1?as_of=2020-05-01"],
     "/series/fiscal/{name}": ["/series/fiscal/debt_to_penny"],
     "/series/auctions": [
         "/series/auctions",
@@ -255,7 +256,7 @@ FORMS = {"/edgar"}
 
 @pytest.fixture(scope="module")
 def full(tmp_path_factory):
-    """One DB with a row for every page: a job run, an alert, BLS, Fiscal, auctions and their
+    """One DB with a row for every page: a job run, an alert, BLS, FRED, Fiscal, auctions and their
     cross-check, BLS releases, EDGAR, symbols and their history."""
     tmp = tmp_path_factory.mktemp("full")
     config = tmp / "config"
@@ -281,6 +282,14 @@ def full(tmp_path_factory):
             [CPI],
         )
         series_fx._obs(con, CPI, 2025, "M08", "323.364", SEEN)
+        con.execute(
+            "INSERT INTO fred_series VALUES ('GDPC1', 'Real Gross Domestic Product',"
+            " 'Billions of Chained 2017 Dollars', 'Quarterly', 'SAAR', NULL, 1)"
+        )
+        con.execute(
+            "INSERT INTO fred_observation VALUES ('GDPC1', '2020-01-01', 18987.877,"
+            " '2020-04-29', '2020-04-29 04:00', 1)"
+        )
         con.execute(series_fx.PENNY)
         con.execute("INSERT INTO fd_debt_to_penny VALUES ('2026-10-06', 30.1e12, 37.1e12, 1)")
         con.execute(

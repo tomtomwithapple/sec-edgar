@@ -64,6 +64,14 @@ jobs:
     cron: "0 6 * * mon"            # the release schedule; calendar_stale when it reaches < 30 days
     calendar: any
     due: none
+  fred:
+    cron: "30 18 * * *"            # FRED series (fred.yaml); H.15 rates for a day appear the
+                                   # next afternoon (DGS10 2026-10-08 had vintage 10-09, updated
+                                   # 15:16 CT), weekly and monthly series on their release days
+    calendar: federal
+    due: none                      # mixed frequencies: no zero_new_rows / stale_watermark
+    alerts:
+      value_jump: {pct: 25}        # only series with jump_pct in fred.yaml are checked, at it
   edgar_tickers:
     cron: "15 7 * * *"             # SEC's ticker map (company_tickers.json): a full file, no
                                    # watermark; pairs it drops are kept inactive

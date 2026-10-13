@@ -24,7 +24,7 @@ import duckdb
 
 from usfin import alerts, calendars, ratelimit, scheduler, store
 from usfin.settings import Settings
-from usfin.sources import bls, fiscal
+from usfin.sources import bls, fiscal, fred
 from usfin.sources.edgar import bulk, concepts, dailyindex, feed
 
 _PID = re.compile(r"\(PID (\d+)\)")
@@ -53,7 +53,7 @@ ENV: tuple[EnvVar, ...] = (
     EnvVar("SEC_USER_AGENT", True, True, "EDGAR jobs: 'Name email' (SEC fair access)"),
     EnvVar("BLS_CONTACT_EMAIL", True, True, "www.bls.gov release calendar (bls_calendar)"),
     EnvVar("BLS_API_KEY", True, False, "BLS v2 (keyless v1 with 15-min retries otherwise)"),
-    EnvVar("FRED_API_KEY", True, False, "ALFRED backfill of BLS first prints (usfin bls alfred-backfill)"),
+    EnvVar("FRED_API_KEY", True, False, "job fred (fred.yaml); ALFRED backfill of BLS first prints"),
     EnvVar("ALERT_WEBHOOK_URL", True, False, "alerts POSTed as JSON"),
     EnvVar("USFIN_DB", False, False, "DuckDB file", "data/usfin.duckdb"),
     EnvVar("USFIN_RAW", False, False, "raw responses dir", "raw"),
@@ -79,6 +79,7 @@ CONFIG: Mapping[str, Callable[[Path], Any]] = {
     "calendars.yaml": calendars.load_calendars,
     "fiscal_data.yaml": fiscal.load_datasets,
     "bls.yaml": bls.load_series,
+    "fred.yaml": fred.load_config,
     "edgar.yaml": _edgar,
     "concepts.yaml": concepts.load_concepts,
     "schedule.yaml": _schedule,

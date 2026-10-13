@@ -142,6 +142,7 @@ SOURCE_MODULES: tuple[str, ...] = (
     "usfin.sources.auction_xcheck",
     "usfin.sources.bls",
     "usfin.sources.bls_calendar",
+    "usfin.sources.fred",
     "usfin.sources.edgar.tickers",
     "usfin.sources.edgar.submissions",
     "usfin.sources.edgar.companyfacts",

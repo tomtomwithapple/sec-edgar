@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › FRED</p>
+<div class="head">
+  <h1>{{ meta.series_id }}</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="sub">{{ meta.title }}{% if meta.units %} <span class="muted">· {{ meta.units }}</span>{% endif %}{% if meta.frequency %} <span class="muted">· {{ meta.frequency }}</span>{% endif %}{% if meta.seasonal_adjustment %} <span class="muted">· {{ meta.seasonal_adjustment }}</span>{% endif %}</p>
+<form class="pick" method="get" action="/series/fred/{{ meta.series_id }}">
+  <label for="as_of">As of (New York date)</label>
+  <input id="as_of" name="as_of" type="date" value="{{ as_of or '' }}">
+  <button type="submit">Show</button>
+  {% if as_of %}<a href="/series/fred/{{ meta.series_id }}">Latest</a>{% endif %}
+</form>
+<p class="muted">{% if as_of %}Values as they were known at 23:59:59 New York on {{ as_of }} (ALFRED vintages, point in time).{% else %}Latest published values{% if meta.last_updated %}; FRED last updated {{ meta.last_updated }}{% endif %}.{% endif %}</p>
+{% if not table.rows %}
+<p class="notice warn">no values known as of {{ as_of or "now" }}{% if first_seen %} — the oldest stored version was first seen {{ first_seen | cell }}{% else %} — nothing stored for this series yet (run <code>usfin run fred</code>){% endif %}.</p>
+{% else %}
+{% if chart %}<figure class="chart-box">{{ chart | safe }}</figure>{% endif %}
+{% if table.rows | length > html_rows %}<p class="muted">Newest {{ html_rows }} of {{ table.rows | length }} rows; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Date</th><th class="num">Value</th><th class="num">Versions</th><th>Vintage</th><th>First seen</th></tr>
+  </thead>
+  <tbody>
+  {% for row in rows_newest %}
+    <tr>
+      <td>{{ row.date | cell }}</td>
+      <td class="num">{% if row.value is none %}<span class="muted">no value</span>{% else %}{{ row.value }}{% endif %}</td>
+      <td class="num">{{ row.versions }}</td>
+      <td>{{ row.realtime_start | cell }}</td>
+      <td>{{ row.first_seen_at | cell }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

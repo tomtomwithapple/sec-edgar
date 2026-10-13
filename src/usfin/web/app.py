@@ -1,8 +1,8 @@
 """FastAPI app for `usfin serve`: the local web UI and its small JSON API.
 
-Pages: jobs `/`, `/alerts`, the series browser `/series…` (with the auction cross-check
-`/series/auctions/xcheck` and the BLS release calendar `/series/releases`), EDGAR `/edgar…` and
-`/screen`, and the symbols pages `/symbols/unmatched` and `/symbols/history`.
+Pages: jobs `/`, `/alerts`, the series browser `/series…` (BLS and FRED point in time, the
+auction cross-check `/series/auctions/xcheck` and the BLS release calendar `/series/releases`),
+EDGAR `/edgar…` and `/screen`, and the symbols pages `/symbols/unmatched` and `/symbols/history`.
 
 `create_app(scheduler)` starts the scheduler and runs catch-up in the app's lifespan and shuts it
 down on exit (`manage=False` leaves both to the caller). Run-now only queues the job on the
@@ -234,6 +234,43 @@ def create_app(
             first_seen=first_seen,
             chart=chart,
             rows_newest=list(reversed(rows)),
+        )
+
+    @app.get("/series/fred/{series_id}")
+    def fred_page(series_id: str, request: Request) -> Response:
+        raw_as_of = request.query_params.get("as_of") or None
+        try:
+            as_of = date.fromisoformat(raw_as_of) if raw_as_of else None
+        except ValueError:
+            raise HTTPException(400, f"as_of must be YYYY-MM-DD, got {raw_as_of!r}") from None
+        with db() as con:
+            meta = series.fred_series(con, settings.config_dir, series_id)
+            if meta is None:
+                raise HTTPException(404, f"unknown FRED series {series_id!r}")
+            rows = series.fred_rows(con, series_id, as_of)
+            first_seen = series.fred_first_seen(con, series_id) if not rows else None
+        title = f"{meta.title} ({meta.units})" if meta.units else meta.title
+        chart = charts.line_chart(
+            series.points(rows, "date", "number"),
+            title=f"{series_id}: {title}" + (f", as of {as_of}" if as_of else ""),
+            y_label=meta.units or series_id,
+            x_label=meta.frequency or "Date",
+        )
+        name = f"fred_{series_id}" + (f"_as_of_{as_of}" if as_of else "")
+        return respond(
+            request,
+            templates,
+            "series_fred.html",
+            Table(name, series.FRED_COLUMNS, rows),
+            title=series_id,
+            nav="series",
+            csv_href=csv_href(request),
+            meta=meta,
+            as_of=as_of,
+            first_seen=first_seen,
+            chart=chart,
+            rows_newest=list(reversed(rows))[:HTML_ROWS],
+            html_rows=HTML_ROWS,
         )
 
     @app.get("/series/fiscal/{name}")

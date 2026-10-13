@@ -1,0 +1,41 @@
+# FRED series fetched by job `fred` (S42). Point in time: the first run of a series loads every
+# ALFRED vintage (chunked: FRED allows at most 2000 vintage dates per request), later runs ask
+# for the vintages since the newest stored one, for observation dates within lookback_days.
+#
+#   lookback_days: <n>     # how far back (observation dates) a daily run looks for revisions
+#   series:
+#     - id: <FRED series ID>
+#       jump_pct: <pct>    # optional: value_jump alert threshold for this series; omitted = no
+#                          # value_jump check (rates near zero and spreads swing by design)
+lookback_days: 1825
+series:
+  # rates and markets
+  - id: DFF               # Federal funds effective rate, daily
+  - id: SOFR              # Secured Overnight Financing Rate, daily
+  - id: DGS2              # 2-year Treasury constant maturity, daily
+  - id: DGS10             # 10-year Treasury constant maturity, daily
+  - id: T10Y2Y            # 10-year minus 2-year spread, daily
+  - id: VIXCLS            # CBOE VIX close, daily
+  - id: BAMLH0A0HYM2      # ICE BofA US high yield OAS, daily
+  - id: MORTGAGE30US      # Freddie Mac 30-year fixed mortgage rate, weekly
+  - id: WALCL             # Fed total assets, weekly
+    jump_pct: 10
+  # macro
+  - id: GDP               # nominal GDP, quarterly
+    jump_pct: 10
+  - id: GDPC1             # real GDP, quarterly
+    jump_pct: 10
+  - id: PCEPI             # PCE price index, monthly
+    jump_pct: 5
+  - id: PCEPILFE          # core PCE price index, monthly
+    jump_pct: 5
+  - id: INDPRO            # industrial production index, monthly
+    jump_pct: 10
+  - id: RSAFS             # retail and food services sales, monthly
+    jump_pct: 10
+  - id: HOUST             # housing starts, monthly
+    jump_pct: 25
+  - id: UMCSENT           # U. Michigan consumer sentiment, monthly
+    jump_pct: 25
+  - id: M2SL              # M2 money stock, monthly
+    jump_pct: 5

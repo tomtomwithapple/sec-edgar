@@ -1817,6 +1817,12 @@ Red: `tests/test_web_edgar.py` — the company page lists filings stored under a
 Green: `web/edgar.py` `party()`, template section.
 Done when: an investor's 13D/G about an issuer shows on the investor's page.
 
+### S42 — FRED series job
+Depends on: S5, S9, S18, S32
+Red: `tests/test_fred.py` — a first run stores every vintage of a series (live GDPC1 fixture, 33 vintages) first seen at `realtime_start` 00:00 ET; `fred_as_of(DATE)` gives Q1 2020 real GDP as first estimated; the first load is cut into real-time windows of `MAX_VINTAGES` (a fake FRED refuses a window listing more, counting one extra as live FRED does) and stores the same rows as one window; pages by `offset`; a later run asks from the newest stored vintage within `lookback_days`; rows FRED clips to the window's start are no new version, a revision is; a first load that failed is fetched whole again (no watermark = not loaded); reparse rebuilds the same rows; no key → `skipped`, no request; the key never reaches `raw_response`; config errors; only series with `jump_pct` are value_jump-checked; `/series` lists FRED, `/series/fred/<id>` with `?as_of=` and CSV.
+Green: migration 020 (`fred_series`, `fred_observation`, `fred_as_of`, `fred_observation_latest`), `config/fred.yaml` (18 series), `sources/fred.py` job `fred` (schedule `30 18 * * *` federal), doctor loads `fred.yaml`, `web` page `series_fred.html`.
+Done when: `usfin run fred` loads every configured series live, a rerun adds no observation, a reparse leaves the table's md5 unchanged.
+
 ## Progress
 
 | Slice | Status | Date | Commit | Tests | Run showed |
@@ -1863,8 +1869,10 @@ Done when: an investor's 13D/G about an issuer shows on the investor's page.
 | S39 UI: BLS release calendar | done | 2026-10-09 | 9fd5b29 | 9 new (test_web_checks) | `/series/releases` 200, empty with the "run `usfin run bls_calendar`" notice: `BLS_CONTACT_EMAIL` unset in this clone, not run (blocked, not guessed) |
 | S40 UI: symbol history | done | 2026-10-09 | 9fd5b29 | 11 new (test_web_symbol_history) | `usfin run symbols`: baseline snapshots nasdaqlisted 5 622 / otherlisted 7 634 (2026-10-09 01:31Z); `/symbols/history` 200 with the baseline and snapshots, 0 events until the next diffed snapshot |
 | S41 UI: filings by others naming a company | done | 2026-10-09 | 9fd5b29 | 1 new (test_web_edgar); test_web_symbols' CSV route list +3 routes, 10 URLs | Not run live: `SEC_USER_AGENT` unset in this clone (serve's catch-up `edgar_tickers` refused with ConfigError, no request sent) |
+| S42 FRED series job | done | 2026-10-13 | (this commit) | 26 new (test_fred); test_web_symbols' CSV route list +1 route, 2 URLs; suite 788 passed | Live, `FRED_API_KEY` from `.env`. Probes: `fred/series/observations` clips `realtime_start` to the requested start (DGS10 2026-09-28's 5.24 came back dated 2026-10-05); a full-history request for DGS10 is refused (5 127 vintage dates > 2000). First `usfin run fred` (2000-date windows) failed DFF, DGS10, T10Y2Y with "2001 vintage dates" for windows of 2000 listed ones — FRED counts one more — so `MAX_VINTAGES` = 1998; the 15 others loaded (135 655 rows). Second run `fred #62 ok rows 58129`: the 3 loaded whole (DFF 28 063 rows from 1954, DGS10 16 905 from 1962), the rest incremental. 18 series, 193 751 rows; raw 102 responses, 32 MB. `fred_as_of(DATE '2020-05-01')` GDPC1 2020-01-01 = 18 987.877 (advance estimate, vintage 2020-04-29), then 18 974.702, 18 977.363, 19 010.848, … Third run `fred #63 ok rows 18` (the 18 catalog upserts; observation md5 unchanged), `usfin reparse fred` 117 raw, md5 unchanged. `/series` lists the 18, `/series/fred/DGS10` 200 with chart, jobs page next fire 2026-10-13 18:30 EDT. |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
 - After close (user, 2026-10-09): every stored dataset gets a page — S38–S41; work is committed straight to `main` from now on.
+- After close (user, 2026-10-13): FRED becomes a scheduled source of its own with its own series list (S42), not only the BLS backfill; the series picked (rates/markets and macro) are a starting set to edit.
 - After S32 (user, 2026-10-08): MTS table 1 is derived into true monthly series (S37) rather than plotted/alerted by line position.
 
 ## Close

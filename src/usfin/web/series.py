@@ -1,4 +1,5 @@
-"""Series browser queries (`/series`): BLS series point in time, Fiscal Data datasets, auctions.
+"""Series browser queries (`/series`): BLS and FRED series point in time, Fiscal Data datasets,
+auctions.
 
 Every function takes an open connection and returns plain rows for a `usfin.web.tables.Table`;
 the page handlers in `usfin.web.app` add the chart. Identifiers that reach SQL text (Fiscal Data
@@ -7,6 +8,7 @@ column names) are checked against the table's own columns first and quoted.
 - **BLS**: `bls_as_of(DATE)` (C4: 23:59:59 New York that day) or, without `as_of`, the latest
   version; one row per period with how many versions were known by then; NULL values (a period BLS
   published as "-") stay rows and are gaps in the chart.
+- **FRED**: `fred_as_of(DATE)` the same way, one row per observation date (S42).
 - **Fiscal Data**: one series = one value of the registry's `series` columns (default pk minus
   the date field), e.g. a DTS account type or an exchange-rate country-currency; without a pick the
   page lists the series (a single `jump_match` value per series column is the default pick).
@@ -29,7 +31,7 @@ from typing import Any
 
 import duckdb
 
-from usfin.sources import bls, fiscal
+from usfin.sources import bls, fiscal, fred
 from usfin.sources.fiscal import Dataset
 
 LATEST = datetime(9999, 12, 31, tzinfo=UTC).replace(tzinfo=None)
@@ -101,6 +103,15 @@ def index(con: duckdb.DuckDBPyConnection, config_dir) -> list[dict[str, Any]]:
         )
     ):
         rows.append({"source": "bls", **r, "href": f"/series/bls/{r['id']}"})
+    for r in _dicts(
+        con.execute(
+            "SELECT s.series_id AS id, s.title, count(o.date) AS rows,"
+            " min(o.date) AS first, max(o.date) AS last"
+            " FROM fred_series s LEFT JOIN fred_observation_latest o USING (series_id)"
+            " GROUP BY ALL ORDER BY s.series_id"
+        )
+    ):
+        rows.append({"source": "fred", **r, "href": f"/series/fred/{r['id']}"})
     for ds in fiscal.browsable(config_dir).values():
         stats = {"rows": 0, "first": None, "last": None}
         if _table_exists(con, ds.table):
@@ -211,6 +222,70 @@ def _json_list(text: str | None) -> list[Mapping[str, Any]]:
         return []
     value = json.loads(text)
     return [v for v in value if isinstance(v, Mapping)] if isinstance(value, list) else []
+
+
+# --- FRED -----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FredSeries:
+    series_id: str
+    title: str
+    units: str | None
+    frequency: str | None
+    seasonal_adjustment: str | None
+    last_updated: str | None
+
+
+FRED_COLUMNS = ("date", "value", "realtime_start", "first_seen_at", "versions")
+
+
+def fred_series(con: duckdb.DuckDBPyConnection, config_dir, series_id: str) -> FredSeries | None:
+    """The stored catalog entry, else a bare entry for a configured series not fetched yet."""
+    found = con.execute(
+        "SELECT title, units, frequency, seasonal_adjustment, last_updated FROM fred_series"
+        " WHERE series_id = ?",
+        [series_id],
+    ).fetchone()
+    if found:
+        return FredSeries(series_id, *found)
+    if series_id in fred.load_config(config_dir).series:
+        return FredSeries(series_id, series_id, None, None, None, None)
+    return None
+
+
+def fred_rows(
+    con: duckdb.DuckDBPyConnection, series_id: str, as_of: date | None
+) -> list[dict[str, Any]]:
+    """Per observation date, the version known as of `as_of` (a New York date) or the latest."""
+    ts: date | datetime = as_of if as_of is not None else LATEST
+    rows = _dicts(
+        con.execute(
+            "SELECT a.date, a.value, a.realtime_start, a.first_seen_at,"
+            " (SELECT count(*) FROM fred_observation o WHERE o.series_id = a.series_id"
+            "   AND o.date = a.date AND o.first_seen_at <= a_utc.ts) AS versions"
+            " FROM fred_as_of(?) a, (SELECT bls_as_of_utc(?) AS ts) a_utc"
+            " WHERE a.series_id = ? ORDER BY a.date",
+            [ts, ts, series_id],
+        )
+    )
+    for r in rows:
+        v = r["value"]
+        r["number"] = None if v is None else float(v)
+        r["value"] = None if v is None else _plain(v)
+    return rows
+
+
+def fred_first_seen(con: duckdb.DuckDBPyConnection, series_id: str) -> datetime | None:
+    return con.execute(
+        "SELECT min(first_seen_at) FROM fred_observation WHERE series_id = ?", [series_id]
+    ).fetchone()[0]
+
+
+def _plain(value: Decimal) -> str:
+    """A stored DECIMAL(24, 6) without its padding zeros (`5.240000` -> `5.24`)."""
+    text = f"{Decimal(value):f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 # --- Fiscal Data ----------------------------------------------------------------------------
