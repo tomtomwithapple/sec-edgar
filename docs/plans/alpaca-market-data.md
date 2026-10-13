@@ -1,6 +1,6 @@
 # Alpaca market data (usfin)
 
-Status: S4 done — next: S5
+Status: S5 done — next: S6
 Goal: Add free Alpaca US market data (daily bars, the asset list, corporate actions) to usfin as
 new jobs next to EDGAR: archived raw first, stored point-in-time in `data/usfin.duckdb`,
 scheduled, and shown in the existing web UI.
@@ -172,9 +172,10 @@ src/usfin/doctor.py              (edit) key checks (info), CONFIG entry for alpa
 src/usfin/jobs.py                (edit) add the alpaca modules to the import list
 src/usfin/cli.py                 (edit) `usfin alpaca backfill bars|corp-actions`
 src/usfin/sources/alpaca/__init__.py, assets.py, corp_actions.py, bars.py, backfill.py
-src/usfin/migrations/020_alpaca_asset.sql, 021_alpaca_corp_action.sql, 022_alpaca_bar.sql,
-                     023_alpaca_universe.sql, 024_alpaca_security.sql, 025_alpaca_adjusted.sql
-                     (views/macros; numbers follow the last migration at the time — 019 now)
+src/usfin/migrations/020_alpaca_asset.sql, 021_alpaca_corp_action.sql,
+                     022_alpaca_universe.sql, 023_alpaca_bar.sql, 024_alpaca_security.sql,
+                     025_alpaca_adjusted.sql (views/macros; numbers follow the last migration at
+                     the time — amended in S5: the universe, built first, took 022)
 src/usfin/web/prices.py, web/app.py (edit), web/edgar.py (edit),
 web/templates/prices.html, prices_universe.html, base.html (edit, nav), edgar template (edit)
 tests/test_alpaca_*.py, tests/fixtures/alpaca/...,
@@ -280,6 +281,23 @@ into it. History holds a 16th group, `redemption` (16 actions, 2023), not in the
 **Universe (A3).** View `alpaca_universe(symbol, source)`: rules as in A3, `source` naming the
 rule (asset_active, asset_inactive, merger, removal, renamed). Every universe symbol requests
 bars 2016-01-04..today; Alpaca returns what exists.
+*Amended in S5* (migration `022_alpaca_universe.sql`): one row per distinct (symbol, source), so
+a symbol reached by several rules has several rows (FB: asset_active + renamed; IBTA:
+asset_active + asset_inactive); read distinct symbols for requests. Assets are read from each
+asset id's newest `alpaca_asset_history` row: `asset_active` = active and still open,
+`asset_inactive` = inactive or gone from the list since (so a delisting never drops a symbol).
+Actions are read from `alpaca_corp_action_latest`; an action symbol whose only assets are OTC
+is left out (512 live), one in no asset at all (TWTR) is in. The listed exchanges are written
+into the view (a view cannot read `config/alpaca.yaml`); a test keeps them equal to `exchanges`.
+SIVB is the acquirer (not the acquiree) of BPFH's 2023 stock-and-cash merger, so it stays out.
+Live 2026-10-13: 24 737 rows, **23 061 distinct symbols** (15 870 from assets, 7 191 only from
+action rules). The rule-only symbols come almost entirely from actions of 2019 on (first action
+year: 4 before 2019, 77 in 2019, ~700-1 250 a year from 2020), so delistings of 2016-2019 are
+mostly missing — a wider survivorship gap than SIVB alone. Not every symbol is a plain ticker:
+441 rows are CUSIP-like (`09175M705`, `005CVR014`, `478ESC015`: escrows, CVRs, rights; 289 of
+them inactive *listed* assets, so the asset list itself carries them) and dotted suffixes
+(`.WS` warrants, `.U` units, `.RT` rights, `.WI` when-issued, `.PRA` preferreds) are common;
+the view keeps them all, the bars slices see what Alpaca returns for them.
 
 **Bars (`alpaca_bars`).** GET `/v2/stocks/bars?timeframe=1Day&feed=sip&adjustment=raw&asof=-
 &limit=10000`, symbols in batches (`batch_size`, start 100; measure and record). `date` = `t`
@@ -301,7 +319,8 @@ write, close), and its progress is a watermark key under the job name `alpaca_ba
 which has no `schedule.yaml` entry, so no alert rules run on it (A9, A10). (Corporate
 actions do the same per month under `alpaca_corp_actions_backfill`; see How › Corporate
 actions.) Expected: ~16.1 k
-listed asset rows + action symbols; 25-35 M bars; ~3 000 pages at 1.8-7.2 s each → 2-6 h,
+listed asset rows + action symbols (*amended in S5:* the universe has 23 061 distinct symbols,
+15 870 from assets and 7 191 only from actions, many of those CUSIP-like or rights with no bars); 25-35 M bars; ~3 000 pages at 1.8-7.2 s each → 2-6 h,
 latency-bound (~15 requests/min, far under the cap); raw store +~3.3 GB before gzip; DB growth
 measured and recorded in the slice.
 
@@ -460,7 +479,7 @@ Depends on: S2, S4
 Red: `tests/test_alpaca_universe.py` — `alpaca_universe` holds listed active/inactive asset
 symbols, merger `acquiree_symbol`s (TWTR), worthless-removal symbols and renamed `old_symbol`s,
 each with its `source`; OTC-only symbols excluded; SIVB absent (documented gap).
-Green: How › Universe; migration `023_alpaca_universe.sql` (view).
+Green: How › Universe; migration `022_alpaca_universe.sql` (view; amended in S5, was 023).
 Run: count per `source` on the live worktree DB; TWTR in, SIVB out.
 Done when: A3.
 
@@ -471,7 +490,7 @@ batches symbols and follows `next_page_token`; `t` 04:00Z/05:00Z → NY date; id
 inserts 0; a changed compared column inserts a version with `first_seen_at` = `fetched_at`;
 `alpaca_bar_as_of(ts)` and `alpaca_bar_latest`; dedupe test after mixed runs; no PK in the
 migration; reparse rebuilds.
-Green: How › Bars (table, insert, as-of); migration `022_alpaca_bar.sql`;
+Green: How › Bars (table, insert, as-of); migration `023_alpaca_bar.sql` (amended in S5, was 022);
 `sources/alpaca/bars.py` with a `--symbols`-style key list for tests.
 Run: live fetch for AAPL, FB, META, METV, TWTR from 2016: counts match Why (FB 1 945, META 1 326
 with `asof=-`); rerun inserts 0.
@@ -550,7 +569,7 @@ Done when: A10 full run recorded, A12 docs; every criterion A1-A12 checked.
 | S2 alpaca_assets | done | 2026-10-12 | 5d1ad52 | 15 new (`tests/test_alpaca_assets.py`, fixture `tests/fixtures/alpaca/assets.json`: 49 objects byte for byte from the live list); suite 794 passed | Live `usfin run alpaca_assets`: one call, 14.6 MB, 33 564 assets, run 38 s (fetch ~23-31 s); first snapshot opened 33 564 history rows. Per exchange active/inactive (first snapshot): NASDAQ 5 626/1 326, NYSE 2 907/843, ARCA 2 754/471, BATS 1 659/137, AMEX 291/98, OTC 1 157/16 295. Finding: a rerun 29 s later (06:39 ET) got a *different* list, 33 497 assets (−0.20 %, inside the gate): 69 ids gone (55 OTC, 14 listed, all active-untradable), 2 new (PCG.PRX, WIZEY), 48 changed (tradable flips, renames); diffed: 50 opened, 117 closed. Alpaca refreshes the list in the early morning; 07:30 ET stays. A third run (28 s) found it identical: **inserted 0**, watermark moved. `usfin reparse alpaca_assets`: 3 raw responses, 67 061 rows rebuilt identically in 2.3 s, no request. Plan amended (How › Assets): an identical list is not stored again, watermark = newest confirming fetch, no snapshot PK. First live attempt failed with `ConnectError` (the local resolver briefly returned ISP block-page IPs for paper-api.alpaca.markets; resolved by itself within a minute). |
 | S3 alpaca_corp_actions | done | 2026-10-12 | d0ebf51 | 28 new (`tests/test_alpaca_corp_actions.py`, 9 fixtures in `tests/fixtures/alpaca/corp_actions/`: whole live responses byte for byte, narrowed by `symbols` — AAPL 2020-08 dividend + 4:1 split, CTNT 150:1 reverse split, FB→META name change, TWTR cash merger, SIVBQ worthless removal, ATAI stock-and-cash merger, AAPL 2016-2026 at `limit=40` as two pages, an empty window); suite 822 passed | Live `usfin run alpaca_corp_actions` (2026-10-12 08:55 ET): window 2026-09-12..2027-01-10, 9 pages (1 000, 1 000, 999, 1 000, 1 000, 1 000, 1 000, 999, 216; ~1.1-1.5 s each), run 13.4 s, **8 214 actions** inserted, process_date 2026-09-14..2027-01-08, 2 122 future-dated; watermark `2026-10-12` (newest process_date ≤ today). Per type: cash_dividend 7 751, capital_gains_distribution 144, reverse_split 118, name_change 53, forward_split 26, partial_call 24, worthless_removal 23, cash_merger 22, stock_merger 18, reorganization 11, spin_off 9, stock_dividend 5, stock_and_cash_merger 4, rights_distribution 4, unit_split 2. Rerun 7 min later: 9 pages, **inserted 0**. `usfin reparse alpaca_corp_actions`: 18 raw responses, 8 214 rows rebuilt in 0.6 s, no request. Key id and secret in neither the table, `raw_response` nor the raw files. No id appears twice within or across pages (the 999-long pages are Alpaca's). Plan amended (How › Corporate actions): versions compare with the newest per id, `type` = singular group key, 15 types, `nyse` calendar. Gate note: pytest reports 75 s but `uv run pytest -q` takes ~5 min wall clock on this Mac (outside the session timer; not from this slice's tests, which take 3.5 s). |
 | S4 Corp-action backfill | done | 2026-10-13 | 8402471 | 16 new (`tests/test_alpaca_backfill_corp.py`: month windows on `process_date`, `next_page_token`, resume after a stop, open month refetched, an earlier `--from` reuses a later stretch, one DB session per window with another writer between windows, progress under `alpaca_corp_actions_backfill` with no rules/alerts and the job's watermark untouched, reparse rebuilds, no key stored, CLI output/bad date/no keys, a stalled read times out and is retried); suite 838 passed | Live `usfin alpaca backfill corp-actions` 2016-01-01..2026-10-13: 130 month windows, **461 pages**, ~379.6 k actions new (table now 387 849 with S3's window; 6 092 of 2026's backfilled actions matched S3's rows and inserted nothing). Per process_date year: 2016 24 401, 2017 25 331, 2018 26 435, 2019 27 119, 2020 34 024, 2021 36 375, 2022 37 579, 2023 39 626, 2024 42 435, 2025 48 540, 2026 45 976 (incl. future-dated from S3), 2027 8. Per type: cash_dividend 370 017, reverse_split 5 626, name_change 3 692, stock_merger 3 223, cash_merger 1 999, forward_split 972, unit_split 509, worthless_removal 472, stock_dividend 311, stock_and_cash_merger 250, capital_gains_distribution 247, spin_off 241, rights_distribution 121, reorganization 93, partial_call 60, **redemption 16** (a 16th group, 2023 only, not in S3's window). Before 2019 Alpaca has almost only dividends and splits (2016: 3 types; mergers/renames from 2017, numerous from 2020), so A3's merger/rename universe rules reach back mainly from 2020. FB->META rename and TWTR cash merger present. DB 25.96 MB -> 107.49 MB (+81.5 MB); raw store 3.7 MB -> 19.6 MB (gzip; 88.97 MB of bodies over 482 corp-action responses). Time: 75 pages in 113 s (~1.5 s/page) while the Mac was awake; the whole run took ~8 h wall clock over four runs because the Mac (on battery) idle-slept between brief DarkWakes. **Resume, three real stops**: (1) interrupted by me during Dec 2021 -> rerun skipped 71 windows and started at 2021-12; (2) killed by the planning session after a read hung 45+ min across sleep at Oct 2024 -> rerun started at 2024-10; (3) a `ConnectError` (connection refused, the DNS blip) at Aug 2025 page 2 -> rerun started at 2025-08 and finished. Each stop rolled back only its open window. A final rerun fetched only Oct 2026 (3 pages, 2 025 actions, **inserted 0**, 4.3 s). 0 alerts; no duplicate (id, payload); the secret is in no raw or DB file. **Finding (hang):** the shared client's `httpx.Timeout(60, connect=15)` does apply to Alpaca (no override; a `ReadTimeout` is retried; test added), but it is counted on the monotonic clock, which on macOS stops while the system sleeps: a socket half-open across sleep only times out after 60 s of *awake* time, and between 05:12 and 05:58 the Mac woke only for seconds at a time (DarkWakes 05:27, 05:42, 05:56). Not a code bug and not fixed here; run long backfills on AC power or under `caffeinate -s`. **Finding (slow suite):** same cause: pytest's 78 s are awake time; the 5-25 min wall clock is system sleep (the final gate, run while the Mac stayed awake, took 81 s wall for 80 s reported). Plan amended (How > Corporate actions: backfill semantics, the `redemption` group; How > Backfill: corp actions use the same per-window session pattern). |
-| S5 Universe view | todo | | | | |
+| S5 Universe view | done | 2026-10-13 | (hash) | 13 new (`tests/test_alpaca_universe.py`, built from the S2 asset fixture and S3 action fixtures loaded through the real jobs: listed active/inactive, IBTA both, every config exchange and no OTC asset, TWTR and ATAI mergers in and the acquirer CVR out, SIVBQ removal, SIVB absent, FB renamed + asset, CTNT split adds nothing, an action symbol known only as OTC is out, a listed id gone from the list stays as inactive, newest action version, distinct pairs with a known source, empty store); suite 851 passed | Migration `022_alpaca_universe.sql` (view) applied to the worktree DB (schema 22). Live per source: asset_active 13 224, asset_inactive 2 871, merger 4 776, removal 367, renamed 3 499; 24 737 rows, **23 061 distinct symbols** (15 870 from assets, 7 191 only from action rules; 1 564 symbols reached by 2-4 rules). TWTR in (merger), SIVB out; SIVBQ in (removal; it is in no asset row, so the OTC filter cannot see it); META is also `renamed` (Roundhill's META -> METV, 2022). 512 action symbols dropped as OTC-only. **Findings:** (1) the rule-only symbols come from 2019 on (first action year: 4 before 2019, 77 in 2019, 700-1 250 a year from 2020), so 2016-2019 delistings are mostly absent: the survivorship gap is wider than SIVB. (2) Not all symbols are tickers: 441 rows CUSIP-like (`09175M705` is an inactive *listed* asset; `005CVR014`, `478ESC015` removals; 289 of the 441 come from the asset list itself), plus `.WS` (217 renamed), `.U`, `.RT` (37 removals), `.WI`, `.PRx`; kept, bars slices will see what Alpaca returns. (3) SIVB appears only as the *acquirer* of BPFH (2023). (4) The universe is ~23.1 k symbols, not ~16.1 k: the bars backfill estimate grows ~45 %. Query 0.3 s. Plan amended: migration numbers (universe 022, bars 023), How › Universe (row grain, asset/OTC rules, counts, the pre-2019 gap, odd symbols), How › Backfill (symbol count). |
 | S6 Bars core | todo | | | | |
 | S7 Daily bars job | todo | | | | |
 | S8 Bars backfill command | todo | | | | |
