@@ -26,6 +26,26 @@ series:
   - id: NFCI              # Chicago Fed National Financial Conditions Index, weekly
   - id: DCOILBRENTEU      # Brent crude spot price, daily
     jump_pct: 25
+  # net liquidity: WALCL - WTREGEN - RRPONTSYD (WALCL and WTREGEN in $ millions, RRPONTSYD in
+  # $ billions); TGA and RRP swing by design, so no value_jump check
+  - id: WTREGEN           # Treasury General Account at the Fed, weekly (Wednesday level)
+  - id: RRPONTSYD         # Fed overnight reverse repo, daily
+  # EM risk
+  - id: BAMLEMCBPIOAS     # ICE BofA emerging markets corporate plus OAS, daily
+  - id: BAMLEMHBHYCRPIOAS # ICE BofA high yield EM corporate plus OAS, daily
+  # nowcasts
+  - id: GDPNOW            # Atlanta Fed GDPNow, quarterly (revised with each model update)
+  - id: WEI               # NY Fed Weekly Economic Index, weekly
+  # rates detail
+  - id: THREEFYTP10       # Kim-Wright 10-year term premium, daily
+  - id: T5YIE             # 5-year breakeven inflation, daily
+  - id: T10YIE            # 10-year breakeven inflation, daily
+  - id: STLFSI4           # St. Louis Fed Financial Stress Index, weekly
+  # uncertainty
+  - id: USEPUINDXD        # US economic policy uncertainty, daily (news-based, noisy)
+  # IDR monthly cross-check against JISDOR (idxscape)
+  - id: CCUSMA02IDM618N   # IDR per USD, monthly average (OECD MEI)
+    jump_pct: 10
   # macro
   - id: GDP               # nominal GDP, quarterly
     jump_pct: 10
