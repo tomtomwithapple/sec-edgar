@@ -1873,6 +1873,7 @@ Done when: `usfin run fred` loads every configured series live, a rerun adds no 
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
 - After close (user, 2026-10-09): every stored dataset gets a page — S38–S41; work is committed straight to `main` from now on.
 - After close (user, 2026-10-13): FRED becomes a scheduled source of its own with its own series list (S42), not only the BLS backfill; the series picked (rates/markets and macro) are a starting set to edit.
+- After S42 (user, 2026-10-13): `config/fred.yaml` grows to 34 series with no code change — d7cae6e adds the investment-assist layer-0 set (DFII10, DTWEXBGS, NFCI, DCOILBRENTEU; 967 719 rows, 928 189 NFCI); 762bf06 adds net liquidity (WTREGEN, RRPONTSYD), EM corporate OAS (BAMLEMCBPIOAS, BAMLEMHBHYCRPIOAS; ICE data from 2023-10-10 only), nowcasts (GDPNOW, WEI), THREEFYTP10, T5YIE, T10YIE, STLFSI4, USEPUINDXD and CCUSMA02IDM618N (IDR per USD; 518 372 rows, 313 457 STLFSI4). Tables unchanged: investment-assist reads `fred_observation_latest` / `fred_as_of` over `usfin serve` (`/series/fred/<id>?format=csv`).
 - After S32 (user, 2026-10-08): MTS table 1 is derived into true monthly series (S37) rather than plotted/alerted by line position.
 
 ## Close
