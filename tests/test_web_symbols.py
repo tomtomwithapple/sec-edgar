@@ -217,6 +217,11 @@ PAGES = {
     "/series": ["/series"],
     "/series/bls/{series_id}": [f"/series/bls/{CPI}", f"/series/bls/{CPI}?as_of=2026-01-31"],
     "/series/fred/{series_id}": ["/series/fred/GDPC1", "/series/fred/GDPC1?as_of=2020-05-01"],
+    "/series/tic": ["/series/tic", "/series/tic?country=indonesia&kind=pos"],
+    "/series/tic/{series_id}": [
+        "/series/tic/for_treas_pos_42218",
+        "/series/tic/for_treas_pos_42218?as_of=2026-10-01",
+    ],
     "/series/fiscal/{name}": ["/series/fiscal/debt_to_penny"],
     "/series/auctions": [
         "/series/auctions",
@@ -290,6 +295,15 @@ def full(tmp_path_factory):
             "INSERT INTO fred_observation VALUES ('GDPC1', '2020-01-01', 18987.877,"
             " '2020-04-29', '2020-04-29 04:00', 1)"
         )
+        con.execute(
+            "INSERT INTO tic_series VALUES ('for_treas_pos_42218', 'Foreign portfolio holdings"
+            " of U.S. Treasury securities: Indonesia', 'for_treas', 'pos', '42218', 'Indonesia',"
+            " true, 'Millions of Dollars', 'M', '2026-09-10 16:33', 1)"
+        )
+        con.execute(
+            "INSERT INTO tic_observation VALUES ('for_treas_pos_42218', '2026-07-01', 37547,"
+            " '2026-10-01 21:15', 1)"
+        )
         con.execute(series_fx.PENNY)
         con.execute("INSERT INTO fd_debt_to_penny VALUES ('2026-10-06', 30.1e12, 37.1e12, 1)")
         con.execute(
@@ -304,7 +318,7 @@ def full(tmp_path_factory):
         edgar_fx._filing(con, k25, APPLE, "10-K", "2025-10-31")
         con.execute(
             "INSERT INTO auction_xcheck VALUES ('91282CAB9', '2026-08-12', 'mismatch', 'Note',"
-            " '{\"high_yield\": {\"fiscal\": \"4.125\", \"treasurydirect\": \"4.130\"}}')"
+            ' \'{"high_yield": {"fiscal": "4.125", "treasurydirect": "4.130"}}\')'
         )
         con.execute(
             "INSERT INTO bls_release VALUES ('2026-10-15', 'Consumer Price Index',"

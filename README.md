@@ -51,6 +51,7 @@ Run once, in this order, from the repo (`uv run usfin …`). Times measured on t
 | BLS series (7, keyless) | `usfin run bls` | one query, 143 observations |
 | BLS release calendar | `usfin run bls_calendar` | 313 release dates (needs `BLS_CONTACT_EMAIL`) |
 | FRED series (34, every vintage) | `usfin run fred` | first load of the 18 S42 series: 21 vintage-date lists + 45 observation pages, 193 751 rows in ~3 min; the 4 added later (DFII10, DTWEXBGS, NFCI, DCOILBRENTEU) 967 719 rows in 9 min, 928 189 of them NFCI (every weekly vintage re-estimates the whole history); the 12 after that (net liquidity, EM OAS, nowcasts, breakevens, term premium, stress, policy uncertainty, IDR) 518 372 rows in 5.6 min, 313 457 of them STLFSI4; repeat runs ~40 s (needs `FRED_API_KEY`) |
+| TIC cross-border securities (keyless) | `usfin run tic` | one 8.9 MB ZIP (122 MB JSON), 4 260 series, 1 130 857 rows in 29 s; repeat runs are a 304 (~10 s, 0 rows) until the next monthly release |
 | EDGAR ticker map | `usfin run edgar_tickers` | 10 434 tickers / 8 016 CIKs in 1.3 s — run before the bulk submissions load, which keeps only these companies |
 | Nasdaq Trader symbols | `usfin run symbols` | 13 253 symbols in 5.5 s |
 | EDGAR bulk | see below | ~1 h in all |
@@ -103,6 +104,7 @@ uv run usfin reparse <job>    # rebuild a job's rows from stored raw responses, 
 | bls | 09:00, retry every 15 min to 12:00 on release days | federal |
 | treasurydirect | 14:00 | bond |
 | fiscal (+ auction_xcheck chained) | 17:00 | federal |
+| tic | 17:15 | federal |
 | fred | 18:30 | federal |
 | edgar_reconcile (+ form4, sched13 chained) | 23:30 | federal |
 | edgar_bulk | Sun 03:00 | any |
@@ -178,6 +180,20 @@ the values known that day, e.g.
 `SELECT * FROM fred_as_of(DATE '2020-05-01') WHERE series_id = 'GDPC1'` has Q1 2020 real GDP as
 first estimated (18 987.877). `/series/fred/<id>?as_of=YYYY-MM-DD` shows it. A series with
 `jump_pct` in `fred.yaml` raises `value_jump` past that change; the others are not checked.
+
+## TIC cross-border securities
+
+Job `tic` keeps the Fed/Treasury CSLT file (`cslt.zip` on ticdata.treasury.gov) point in time:
+4 260 monthly series from 1984-12, $ millions, by country. `for_*` series are foreign holdings
+(`_pos`), net purchases (`_net`) and valuation changes (`_valchg`) of US Treasuries, agencies,
+corporates and equities; `us_*` are the same for US investors in foreign bonds and equities. The
+series id is `<measure>_<kind>_<country code>`, e.g. `for_treas_pos_42218` (Indonesia's holdings
+of Treasuries) or `us_lt_eqty_net_42218` (US net purchases of Indonesian equities); `tic_series`
+has the parts, the country name and whether the series is discontinued. Every release re-sends
+the whole history, so `tic_observation` keeps a row only when a value changed, first seen when it
+was fetched; `tic_as_of(DATE)` and `tic_observation_latest` read it like FRED. A run asks with
+`If-Modified-Since` and stores nothing on a 304. `/series/tic?country=indonesia` lists a
+country's series, `/series/tic/<id>?as_of=YYYY-MM-DD` shows one (both take `?format=csv`).
 
 ## ALFRED backfill (BLS history)
 

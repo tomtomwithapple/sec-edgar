@@ -1,0 +1,301 @@
+{
+ "releaseID": "3",
+ "transmissionDt": "2026-09-10 16:33:47.617012",
+ "version": "2.0",
+ "struct": {
+  "status_codes": {
+   "A": "Active",
+   "D": "Discontinued"
+  },
+  "frequency_codes": {
+   "M": "Monthly"
+  },
+  "season_codes": {
+   "NSA": "Not Seasonally Adjusted"
+  },
+  "missing_value_codes": {
+   "n.a.": "Not Available"
+  }
+ },
+ "series": [
+  {
+   "source_id": "for_lt_agcy_net_10308",
+   "metadata": {
+    "title": "Foreign net transactions of U.S. long-term agency bonds: Belgium and Luxembourg (DISCONTINUED)",
+    "frequency": "M",
+    "season": "NSA",
+    "units": "Millions of Dollars",
+    "notes": "This series reports foreign investors' net purchases, at market value, of U.S. agency bonds. U.S. agencies include Fanni",
+    "additional": {
+     "geography": {
+      "name": "Belgium and Luxembourg",
+      "type": "country"
+     },
+     "tags": [
+      "belgium",
+      "luxembourg",
+      "nation",
+      "liabilities",
+      "long-term",
+      "agency",
+      "flow",
+      "transactions",
+      "net",
+      "securities",
+      "monthly",
+      "nsa"
+     ],
+     "fred_category": [
+      "7",
+      "32966"
+     ],
+     "status": "D"
+    }
+   },
+   "observations": [
+    [
+     "2011-12-01",
+     "1410.0"
+    ],
+    [
+     "2011-11-01",
+     "-2687.0"
+    ],
+    [
+     "2011-10-01",
+     "-514.0"
+    ]
+   ]
+  },
+  {
+   "source_id": "for_treas_net_42218",
+   "metadata": {
+    "title": "Foreign net transactions of U.S. long-term and short-term Treasury securities: Indonesia",
+    "frequency": "M",
+    "season": "NSA",
+    "units": "Millions of Dollars",
+    "notes": "This series reports foreign investors' net purchases, at market value, of U.S. Treasury debt of all maturities.####This ",
+    "additional": {
+     "geography": {
+      "name": "Indonesia",
+      "type": "country"
+     },
+     "tags": [
+      "indonesia",
+      "nation",
+      "liabilities",
+      "treasury",
+      "flow",
+      "transactions",
+      "net",
+      "securities",
+      "monthly",
+      "nsa"
+     ],
+     "fred_category": [
+      "7",
+      "32332"
+     ],
+     "status": "A"
+    }
+   },
+   "observations": [
+    [
+     "2026-07-01",
+     "3678.0"
+    ],
+    [
+     "2026-06-01",
+     "-3985.0"
+    ],
+    [
+     "2026-05-01",
+     "5440.0"
+    ]
+   ]
+  },
+  {
+   "source_id": "for_treas_pos_42218",
+   "metadata": {
+    "title": "Foreign portfolio holdings of U.S. long-term and short-term Treasury securities: Indonesia",
+    "frequency": "M",
+    "season": "NSA",
+    "units": "Millions of Dollars",
+    "notes": "This series reports foreign investor holdings, at market value, of U.S. Treasury debt of all maturities.####This series ",
+    "additional": {
+     "geography": {
+      "name": "Indonesia",
+      "type": "country"
+     },
+     "tags": [
+      "indonesia",
+      "nation",
+      "liabilities",
+      "treasury",
+      "holdings",
+      "securities",
+      "monthly",
+      "nsa"
+     ],
+     "fred_category": [
+      "7",
+      "32332"
+     ],
+     "status": "A"
+    }
+   },
+   "observations": [
+    [
+     "2026-07-01",
+     "37547.0"
+    ],
+    [
+     "2026-06-01",
+     "32009.0"
+    ],
+    [
+     "2026-05-01",
+     "35663.0"
+    ]
+   ]
+  },
+  {
+   "source_id": "us_lt_eqty_net_42218",
+   "metadata": {
+    "title": "U.S. net transactions of foreign equity securities: Indonesia",
+    "frequency": "M",
+    "season": "NSA",
+    "units": "Millions of Dollars",
+    "notes": "This series reports U.S. investors' net purchases, at market value, of foreign equities. Foreign equities are common sto",
+    "additional": {
+     "geography": {
+      "name": "Indonesia",
+      "type": "country"
+     },
+     "tags": [
+      "indonesia",
+      "nation",
+      "assets",
+      "long-term",
+      "equity",
+      "flow",
+      "transactions",
+      "net",
+      "securities",
+      "monthly",
+      "nsa"
+     ],
+     "fred_category": [
+      "7",
+      "32332"
+     ],
+     "status": "A"
+    }
+   },
+   "observations": [
+    [
+     "2026-07-01",
+     "-7.0"
+    ],
+    [
+     "2026-06-01",
+     "-735.0"
+    ],
+    [
+     "2026-05-01",
+     "-835.0"
+    ]
+   ]
+  },
+  {
+   "source_id": "for_treas_pos_42609",
+   "metadata": {
+    "title": "Foreign portfolio holdings of U.S. long-term and short-term Treasury securities: Japan",
+    "frequency": "M",
+    "season": "NSA",
+    "units": "Millions of Dollars",
+    "notes": "This series reports foreign investor holdings, at market value, of U.S. Treasury debt of all maturities.####This series ",
+    "additional": {
+     "geography": {
+      "name": "Japan",
+      "type": "country"
+     },
+     "tags": [
+      "japan",
+      "nation",
+      "liabilities",
+      "treasury",
+      "holdings",
+      "securities",
+      "monthly",
+      "nsa"
+     ],
+     "fred_category": [
+      "7",
+      "32281"
+     ],
+     "status": "A"
+    }
+   },
+   "observations": [
+    [
+     "2026-07-01",
+     "1103943.0"
+    ],
+    [
+     "2026-06-01",
+     "1116683.0"
+    ],
+    [
+     "2026-05-01",
+     "1143139.0"
+    ]
+   ]
+  },
+  {
+   "source_id": "for_treas_pos_99996",
+   "metadata": {
+    "title": "Foreign portfolio holdings of U.S. long-term and short-term Treasury securities: Grand Total",
+    "frequency": "M",
+    "season": "NSA",
+    "units": "Millions of Dollars",
+    "notes": "This series reports foreign investor holdings, at market value, of U.S. Treasury debt of all maturities.####This series ",
+    "additional": {
+     "geography": {
+      "name": "Grand Total",
+      "type": "country"
+     },
+     "tags": [
+      "total",
+      "nation",
+      "liabilities",
+      "treasury",
+      "holdings",
+      "securities",
+      "monthly",
+      "nsa"
+     ],
+     "fred_category": [
+      "7",
+      "32459"
+     ],
+     "status": "A"
+    }
+   },
+   "observations": [
+    [
+     "2026-07-01",
+     "9248126.0"
+    ],
+    [
+     "2026-06-01",
+     "9298509.0"
+    ],
+    [
+     "2026-05-01",
+     "9368501.0"
+    ]
+   ]
+  }
+ ]
+}

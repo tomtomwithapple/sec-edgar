@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/series">Series</a> › TIC</p>
+<div class="head">
+  <h1>TIC cross-border securities</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="sub muted">Fed/Treasury CSLT file, monthly, $ millions. <code>for_*</code>: foreign holdings and purchases of US securities; <code>us_*</code>: US holdings and purchases of foreign securities. Kind <code>pos</code> = holdings, <code>net</code> = net purchases, <code>valchg</code> = valuation change.</p>
+<form class="pick" method="get" action="/series/tic">
+  <label for="country">Country</label>
+  <input id="country" name="country" value="{{ country or '' }}" placeholder="name or code (42218)">
+  <label for="kind">Kind</label>
+  <select id="kind" name="kind">
+    <option value="">all</option>
+    {% for k in kinds %}<option value="{{ k }}"{% if k == kind %} selected{% endif %}>{{ k }}</option>{% endfor %}
+  </select>
+  <label for="measure">Measure</label>
+  <input id="measure" name="measure" value="{{ measure or '' }}" placeholder="for_treas">
+  <button type="submit">Show</button>
+  {% if country or kind or measure %}<a href="/series/tic">All</a>{% endif %}
+</form>
+{% if not table.rows %}
+<p class="notice warn">no TIC series{% if country or kind or measure %} match{% else %} stored yet (run <code>usfin run tic</code>){% endif %}.</p>
+{% else %}
+{% if table.rows | length > html_rows %}<p class="muted">First {{ html_rows }} of {{ table.rows | length }} series; filter by country, or use the CSV.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Series</th><th>Title</th><th>Country</th><th>Kind</th><th>Last</th><th class="num">Value</th></tr>
+  </thead>
+  <tbody>
+  {% for row in table.rows[:html_rows] %}
+    <tr>
+      <td class="name"><a href="{{ row.href }}"><code>{{ row.series_id }}</code></a>{% if not row.active %} <span class="muted">discontinued</span>{% endif %}</td>
+      <td>{{ row.title }}</td>
+      <td>{{ row.country or '' }} <span class="muted">{{ row.country_code }}</span></td>
+      <td>{{ row.kind }}</td>
+      <td>{{ row.last | cell }}</td>
+      <td class="num">{{ row.value if row.value is not none else '' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

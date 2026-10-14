@@ -9,6 +9,8 @@ column names) are checked against the table's own columns first and quoted.
   version; one row per period with how many versions were known by then; NULL values (a period BLS
   published as "-") stay rows and are gaps in the chart.
 - **FRED**: `fred_as_of(DATE)` the same way, one row per observation date (S42).
+- **TIC**: one index row for the CSLT file; `/series/tic` lists its 4 260 series (filter by
+  country, kind, measure) and a series page uses `tic_as_of(DATE)` like FRED (S43).
 - **Fiscal Data**: one series = one value of the registry's `series` columns (default pk minus
   the date field), e.g. a DTS account type or an exchange-rate country-currency; without a pick the
   page lists the series (a single `jump_match` value per series column is the default pick).
@@ -129,6 +131,20 @@ def index(con: duckdb.DuckDBPyConnection, config_dir) -> list[dict[str, Any]]:
                 "href": f"/series/fiscal/{ds.name}",
             }
         )
+    n, first, last = con.execute(
+        "SELECT count(*), min(date), max(date) FROM tic_observation_latest"
+    ).fetchone()
+    rows.append(
+        {
+            "source": "tic",
+            "id": "cslt",
+            "title": "TIC cross-border securities by country (pick a series)",
+            "rows": n,
+            "first": first,
+            "last": last,
+            "href": "/series/tic",
+        }
+    )
     n, first, last = con.execute(
         "SELECT count(*), min(auction_date), max(auction_date) FROM tsy_security"
     ).fetchone()
@@ -279,6 +295,102 @@ def fred_rows(
 def fred_first_seen(con: duckdb.DuckDBPyConnection, series_id: str) -> datetime | None:
     return con.execute(
         "SELECT min(first_seen_at) FROM fred_observation WHERE series_id = ?", [series_id]
+    ).fetchone()[0]
+
+
+# --- TIC ------------------------------------------------------------------------------------
+
+TIC_LIST_COLUMNS = (
+    "series_id", "title", "measure", "kind", "country_code", "country", "active", "last", "value",
+)  # fmt: skip
+TIC_COLUMNS = ("date", "value", "first_seen_at", "versions")
+TIC_KINDS = ("pos", "net", "valchg")
+
+
+@dataclass(frozen=True)
+class TicSeries:
+    series_id: str
+    title: str
+    measure: str
+    kind: str
+    country_code: str
+    country: str | None
+    active: bool
+    units: str | None
+    transmitted_at: datetime | None
+
+
+def tic_list(
+    con: duckdb.DuckDBPyConnection,
+    country: str | None = None,
+    kind: str | None = None,
+    measure: str | None = None,
+) -> list[dict[str, Any]]:
+    """Catalog rows with each series' newest month and value; `country` is a code or a name
+    (case-insensitive substring)."""
+    where, params = [], []
+    if country:
+        where.append("(s.country_code = ? OR lower(s.country) LIKE ?)")
+        params += [country, f"%{country.lower()}%"]
+    if kind:
+        where.append("s.kind = ?")
+        params.append(kind)
+    if measure:
+        where.append("s.measure = ?")
+        params.append(measure)
+    rows = _dicts(
+        con.execute(
+            "SELECT s.series_id, s.title, s.measure, s.kind, s.country_code, s.country, s.active,"
+            " l.date AS last, l.value"
+            " FROM tic_series s LEFT JOIN ("
+            "   SELECT series_id, date, value FROM tic_observation_latest"
+            "   QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) = 1"
+            " ) l USING (series_id)"
+            + (" WHERE " + " AND ".join(where) if where else "")
+            + " ORDER BY s.country_code, s.measure, s.kind",
+            params,
+        )
+    )
+    for r in rows:
+        r["value"] = None if r["value"] is None else _plain(r["value"])
+        r["href"] = f"/series/tic/{r['series_id']}"
+    return rows
+
+
+def tic_series(con: duckdb.DuckDBPyConnection, series_id: str) -> TicSeries | None:
+    found = con.execute(
+        "SELECT series_id, title, measure, kind, country_code, country, active, units,"
+        " transmitted_at FROM tic_series WHERE series_id = ?",
+        [series_id],
+    ).fetchone()
+    return TicSeries(*found) if found else None
+
+
+def tic_rows(
+    con: duckdb.DuckDBPyConnection, series_id: str, as_of: date | None
+) -> list[dict[str, Any]]:
+    """Per month, the version known as of `as_of` (a New York date) or the latest."""
+    ts: date | datetime = as_of if as_of is not None else LATEST
+    rows = _dicts(
+        con.execute(
+            "SELECT a.date, a.value, a.first_seen_at,"
+            " (SELECT count(*) FROM tic_observation o WHERE o.series_id = a.series_id"
+            "   AND o.date = a.date AND o.first_seen_at <= a_utc.ts) AS versions"
+            " FROM tic_as_of(?) a, (SELECT bls_as_of_utc(?) AS ts) a_utc"
+            " WHERE a.series_id = ? ORDER BY a.date",
+            [ts, ts, series_id],
+        )
+    )
+    for r in rows:
+        v = r["value"]
+        r["number"] = None if v is None else float(v)
+        r["value"] = None if v is None else _plain(v)
+    return rows
+
+
+def tic_first_seen(con: duckdb.DuckDBPyConnection, series_id: str) -> datetime | None:
+    return con.execute(
+        "SELECT min(first_seen_at) FROM tic_observation WHERE series_id = ?", [series_id]
     ).fetchone()[0]
 
 

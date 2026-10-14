@@ -273,6 +273,67 @@ def create_app(
             html_rows=HTML_ROWS,
         )
 
+    @app.get("/series/tic")
+    def tic_list_page(request: Request) -> Response:
+        params = request.query_params
+        country = params.get("country") or None
+        kind = params.get("kind") or None
+        measure = params.get("measure") or None
+        if kind and kind not in series.TIC_KINDS:
+            raise HTTPException(400, f"kind must be one of {', '.join(series.TIC_KINDS)}")
+        with db() as con:
+            rows = series.tic_list(con, country, kind, measure)
+        return respond(
+            request,
+            templates,
+            "series_tic.html",
+            Table("tic_series", series.TIC_LIST_COLUMNS, rows),
+            title="TIC",
+            nav="series",
+            csv_href=csv_href(request),
+            country=country,
+            kind=kind,
+            measure=measure,
+            kinds=series.TIC_KINDS,
+            html_rows=HTML_ROWS,
+        )
+
+    @app.get("/series/tic/{series_id}")
+    def tic_page(series_id: str, request: Request) -> Response:
+        raw_as_of = request.query_params.get("as_of") or None
+        try:
+            as_of = date.fromisoformat(raw_as_of) if raw_as_of else None
+        except ValueError:
+            raise HTTPException(400, f"as_of must be YYYY-MM-DD, got {raw_as_of!r}") from None
+        with db() as con:
+            meta = series.tic_series(con, series_id)
+            if meta is None:
+                raise HTTPException(404, f"unknown TIC series {series_id!r}")
+            rows = series.tic_rows(con, series_id, as_of)
+            first_seen = series.tic_first_seen(con, series_id) if not rows else None
+        chart = charts.line_chart(
+            series.points(rows, "date", "number"),
+            title=f"{series_id}: {meta.title}" + (f", as of {as_of}" if as_of else ""),
+            y_label=meta.units or series_id,
+            x_label="Month",
+        )
+        name = f"tic_{series_id}" + (f"_as_of_{as_of}" if as_of else "")
+        return respond(
+            request,
+            templates,
+            "series_tic_one.html",
+            Table(name, series.TIC_COLUMNS, rows),
+            title=series_id,
+            nav="series",
+            csv_href=csv_href(request),
+            meta=meta,
+            as_of=as_of,
+            first_seen=first_seen,
+            chart=chart,
+            rows_newest=list(reversed(rows))[:HTML_ROWS],
+            html_rows=HTML_ROWS,
+        )
+
     @app.get("/series/fiscal/{name}")
     def fiscal_page(name: str, request: Request) -> Response:
         dataset = fiscal.browsable(settings.config_dir).get(name)
