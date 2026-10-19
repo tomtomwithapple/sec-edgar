@@ -9,7 +9,8 @@ batch_size: 100
 lookback_days: 5
 # First bar date requested: the free SIP feed starts on 2016-01-04.
 backfill_start: 2016-01-04
-# Universe symbols with no bars yet that one daily bars run backfills in full.
+# Universe symbols whose history was never asked that one daily bars run asks in full
+# (active first, then by symbol); the other active symbols are refreshed from the watermark.
 new_symbol_cap: 200
 # NYSE sessions with no bar that split a symbol's history into two securities.
 gap_sessions: 60

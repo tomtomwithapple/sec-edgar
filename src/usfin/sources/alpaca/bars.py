@@ -9,7 +9,8 @@ symbol's bars in two, and the next page is the same request plus `page_token`. S
 batches of `batch_size` (`config/alpaca.yaml`). A symbol Alpaca has no bars for (TWTR today,
 `ZZZZQQ`) is simply absent, but one it calls invalid (CUSIP-like `09175M705`, `BF/B`, `ABC-U`)
 fails the whole request with 400 `{"message": "invalid symbol: X"}`: the batch is asked again
-without X (the 400 stays archived; its parse is 0 rows), and the dropped symbols are returned.
+without X (the 400 stays archived; its parse holds no bars), and the dropped symbols are
+returned.
 
 Every page is archived first (source `alpaca`, dataset `alpaca_bars`). A non-200 page other than
 an invalid symbol, or a body that is not the bar list, fails the key before anything is parsed.
@@ -19,15 +20,29 @@ A bar equal in every compared column (exact, NULL = NULL) to the newest stored v
 `fetched_at`. Reparse replays every page in `fetched_at` order, so the versions are rebuilt as
 they were.
 
-S6 scope: the job refreshes the symbols it already holds from watermark − `lookback_days`, with
-no `end` (see `fetch_batch`) (the watermark is the newest bar date seen, never moving back); S7 widens it to the
-universe and its new-symbol catch-up, S8 adds the backfill that fills it from 2016.
+What a request learnt about a symbol goes into `alpaca_bar_symbol`, from the archived responses
+so reparse rebuilds it: `invalid` from the 400's body, `history` for every symbol of a request
+from `backfill_start` (or earlier) with no `end` whose last page (no `next_page_token`) arrived,
+bars or none.
+
+The daily run (S7) asks two sets, `batch_size` symbols a request, never with an `end`:
+(a) every active universe symbol (`asset_active`) from watermark − `lookback_days` (today −
+`lookback_days` with no watermark yet, so a first run is never a whole backfill), which also
+catches up days the job missed; (b) up to `new_symbol_cap` universe symbols whose history was
+never asked, from `backfill_start`: active ones first, then by symbol, so new listings come before
+the delisted tail and every run moves on through the rest. "Never asked", not "no bars": (a)
+gives every active symbol a few days of bars, and a well-formed symbol Alpaca has nothing for
+(`X.RT`, TWTR today) is absent from every answer, so "no bars" would never let (b) reach
+the former and would ask the latter every day. A symbol of (b) is left out of this run's (a); a
+symbol marked `invalid` is in neither. The watermark is the newest bar date seen, never moving
+back. S8's backfill fills the history from 2016 for the whole universe at once.
 """
 
 import json
 import logging
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import duckdb
@@ -42,6 +57,8 @@ DATASET = "alpaca_bars"
 JOB_NAME = "alpaca_bars"
 KEY = "date"
 TABLE = "alpaca_bar"
+SYMBOLS = "alpaca_bar_symbol"
+INVALID_STATUS, HISTORY_STATUS = "invalid", "history"
 PARAMS = {"timeframe": "1Day", "feed": "sip", "adjustment": "raw", "asof": "-", "limit": "10000"}
 MAX_PAGES = 1000
 """A batch that pages on past this is a loop, not data (100 symbols × 10.8 y ≈ 28 pages)."""
@@ -118,19 +135,58 @@ _SCHEMA = json.dumps(
 )
 
 
-def store_page(con: duckdb.DuckDBPyConnection, raw_id: int, *, raw_dir) -> tuple[list[dict], int]:
-    """Insert the page's new bar versions; return (its bars, rows inserted). A non-200 page (an
-    invalid-symbol 400) holds no bars."""
+def note_symbols(
+    con: duckdb.DuckDBPyConnection, symbols: Iterable[str], status: str, at, raw_id: int
+) -> int:
+    """Mark `symbols` `status` in `alpaca_bar_symbol` where not marked yet; return rows added."""
+    items = list(dict.fromkeys(symbols))
+    if not items:
+        return 0
+    return con.execute(
+        f"INSERT INTO {SYMBOLS} SELECT t.symbol, ?, ?, ? FROM unnest(?::VARCHAR[]) t(symbol)"
+        f" WHERE NOT EXISTS (SELECT 1 FROM {SYMBOLS} k WHERE k.symbol = t.symbol"
+        " AND k.status = ?)",
+        [status, at, raw_id, items, status],
+    ).fetchone()[0]
+
+
+def whole_history(url: str, backfill_start: date) -> list[str]:
+    """The symbols of a request asking their whole history (from `backfill_start` or earlier,
+    no `end`), else []."""
+    params = parse_qs(urlsplit(url).query)
+    start = params.get("start", [""])[0]
+    if "end" in params or not start or date.fromisoformat(start) > backfill_start:
+        return []
+    return [s for s in params.get("symbols", [""])[0].split(",") if s]
+
+
+def store_page(
+    con: duckdb.DuckDBPyConnection,
+    raw_id: int,
+    *,
+    raw_dir,
+    backfill_start: date = alpaca.AlpacaConfig.backfill_start,
+) -> tuple[list[dict], int]:
+    """Insert the page's new bar versions; return (its bars, rows inserted). An invalid-symbol
+    400 holds no bars and marks its symbol `invalid`; the last page of a whole-history request
+    marks its symbols `history`."""
     found = con.execute(
-        "SELECT http_status, fetched_at FROM raw_response WHERE id = ?", [raw_id]
+        "SELECT http_status, fetched_at, url FROM raw_response WHERE id = ?", [raw_id]
     ).fetchone()
     if found is None:
         raise LookupError(f"raw_response {raw_id} does not exist")
-    status, at = found
+    status, at, url = found
     if status != 200:
+        if status == 400:
+            with raw.open(con, raw_id, raw_dir=raw_dir) as fh:
+                bad = invalid_symbol(status, fh.read())
+            if bad is not None:
+                note_symbols(con, [bad], INVALID_STATUS, at, raw_id)
         return [], 0
     with raw.open(con, raw_id, raw_dir=raw_dir) as fh:
-        bars, _ = parse(fh.read())
+        bars, token = parse(fh.read())
+    if token is None:
+        note_symbols(con, whole_history(url, backfill_start), HISTORY_STATUS, at, raw_id)
     if not bars:
         return bars, 0
     cols = ("symbol", "date", *COMPARED)
@@ -208,33 +264,62 @@ def fetch_batch(
 # --- job -------------------------------------------------------------------------------------
 
 
-def symbols(ctx: "jobs.JobContext") -> list[str]:
-    """The symbols one run refreshes: those already holding bars (S7: the universe)."""
-    return [
-        s for (s,) in ctx.con.execute(f"SELECT DISTINCT symbol FROM {TABLE} ORDER BY 1").fetchall()
+def select(con: duckdb.DuckDBPyConnection, cap: int) -> tuple[list[str], list[str]]:
+    """(a) the active universe symbols a run refreshes, (b) at most `cap` universe symbols whose
+    history was never asked (active first, then by symbol); neither holds an invalid symbol and
+    (a) leaves out (b)'s."""
+    new = [
+        s
+        for (s,) in con.execute(
+            "SELECT symbol FROM alpaca_universe"
+            f" WHERE symbol NOT IN (SELECT symbol FROM {SYMBOLS})"
+            " GROUP BY symbol ORDER BY bool_or(source = 'asset_active') DESC, symbol LIMIT ?",
+            [cap],
+        ).fetchall()
     ]
+    daily = [
+        s
+        for (s,) in con.execute(
+            "SELECT DISTINCT symbol FROM alpaca_universe WHERE source = 'asset_active'"
+            f" AND symbol NOT IN (SELECT symbol FROM {SYMBOLS} WHERE status = ?)"
+            " AND symbol NOT IN (SELECT unnest(?::VARCHAR[])) ORDER BY symbol",
+            [INVALID_STATUS, new],
+        ).fetchall()
+    ]
+    return daily, new
 
 
 def _fetch(ctx: "jobs.JobContext", key: str) -> Sequence[int]:
     cfg = alpaca.load_config(ctx.settings.config_dir)
     known = ctx.watermarks.get(key)
-    start = (
-        date.fromisoformat(known) - timedelta(days=cfg.lookback_days)
-        if known
-        else cfg.backfill_start
-    )
+    since = date.fromisoformat(known) if known else ctx.today
+    start = since - timedelta(days=cfg.lookback_days)
+    daily, new = select(ctx.con, cfg.new_symbol_cap)
     raw_ids: list[int] = []
-    for batch in batches(symbols(ctx), cfg.batch_size):
-        ids, invalid = fetch_batch(ctx.client, batch, start)
-        raw_ids += ids
-        if invalid:
-            log.warning("alpaca_bars: invalid symbols dropped: %s", ", ".join(invalid))
-    log.info("alpaca_bars: from %s, %s page(s)", start, len(raw_ids))
+    dropped: list[str] = []
+    for symbols, begin in ((new, cfg.backfill_start), (daily, start)):
+        for batch in batches(symbols, cfg.batch_size):
+            ids, invalid = fetch_batch(ctx.client, batch, begin)
+            raw_ids += ids
+            dropped += invalid
+    if dropped:
+        log.warning(
+            "alpaca_bars: %s invalid symbol(s) dropped and remembered: %s", len(dropped),
+            ", ".join(dropped),
+        )  # fmt: skip
+    log.info(
+        "alpaca_bars: %s symbol(s) from %s, %s new symbol(s) from %s, %s page(s)", len(daily),
+        start, len(new), cfg.backfill_start, len(raw_ids),
+    )  # fmt: skip
     return raw_ids
 
 
 def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
-    bars, inserted = store_page(ctx.con, raw_id, raw_dir=ctx.settings.raw_dir)
+    cfg = ctx.memo.get("config") or alpaca.load_config(ctx.settings.config_dir)
+    ctx.memo["config"] = cfg
+    bars, inserted = store_page(
+        ctx.con, raw_id, raw_dir=ctx.settings.raw_dir, backfill_start=cfg.backfill_start
+    )
     log.info(
         "alpaca_bars: raw %s, %s bars of %s symbol(s), %s new version(s)", raw_id, len(bars),
         len({b["symbol"] for b in bars}), inserted,
@@ -253,8 +338,9 @@ JOB = jobs.REGISTRY.register(
         keys=(KEY,),
         fetch=_fetch,
         parsers={DATASET: _parse},
-        versioned=(TABLE,),
+        versioned=(TABLE, SYMBOLS),
         observed={KEY: alerts.Observed(TABLE, "date")},
     )
 )
-"""Alpaca daily bars of the symbols already held, watermark − `lookback_days` .. today."""
+"""Alpaca daily bars: active universe symbols from watermark − `lookback_days`, plus up to
+`new_symbol_cap` symbols' whole history; 20:30 ET on NYSE days."""

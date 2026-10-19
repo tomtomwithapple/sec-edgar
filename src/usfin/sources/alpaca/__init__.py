@@ -22,11 +22,11 @@ class AlpacaConfig:
     batch_size: int = 100
     """Symbols per bars request."""
     lookback_days: int = 5
-    """The daily bars job refetches from watermark − this many days."""
+    """The daily bars job refetches active symbols from watermark − this many days."""
     backfill_start: date = date(2016, 1, 4)
     """First bar date requested (the free SIP window starts here)."""
     new_symbol_cap: int = 200
-    """Universe symbols with no bars yet that one daily bars run backfills in full."""
+    """Universe symbols whose history was never asked that one daily bars run asks in full."""
     gap_sessions: int = 60
     """NYSE sessions without a bar that split a symbol into two securities (A7)."""
 

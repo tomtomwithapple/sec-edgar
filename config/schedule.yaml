@@ -159,3 +159,16 @@ jobs:
     due: nyse
     alerts:
       stale_watermark: {n: 2}      # no action processed over two NYSE days
+  alpaca_bars:
+    cron: "30 20 * * *"            # Alpaca daily bars (/v2/stocks/bars, sip, raw, asof=-), after
+                                   # extended hours: active universe symbols from watermark - 5 d
+                                   # (a missed day is caught up), plus up to new_symbol_cap
+                                   # symbols whose history was never asked, in full; never an
+                                   # `end` (the free plan refuses today's)
+    calendar: nyse
+    due: nyse
+    alerts:
+      zero_new_rows: {after: "20:30"}   # no bar dated after the day's first watermark; a run
+                                        # before 20:30 (manual, catch-up) judges nothing
+      stale_watermark: {n: 1}      # no new bar date over a whole NYSE day
+      # no value_jump: splits move raw prices by any amount

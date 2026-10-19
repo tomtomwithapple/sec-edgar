@@ -456,34 +456,22 @@ def test_the_table_has_no_primary_key(settings):
 # --- job and reparse ------------------------------------------------------------------------
 
 
-def test_the_job_refreshes_the_symbols_it_holds_from_watermark_minus_lookback(
-    settings, fake, clock
-):
-    fake.pages = [body("multi_p1.json"), body("multi_p2.json")]
-    _load(settings, ["MSFT", "AAPL"])  # stands in for the backfill (S8)
-    first = _run(settings, clock, D2)
-    req = fake.requests[2]
-    # no watermark yet: from the SIP start; symbols in name order, one batch; no `end`: a date
-    # end of today is refused by the free plan (403 "recent SIP data")
-    assert dict(req.url.params) == {
-        **bars.PARAMS, "symbols": "AAPL,MSFT", "start": "2016-01-04",
-    }  # fmt: skip
-    assert first.rows_upserted == 0
-    assert _query(
-        settings, "SELECT value FROM watermark WHERE job = 'alpaca_bars' AND key = 'date'"
-    ) == [("2026-10-16",)]
-    _run(settings, clock, D3)
-    assert fake.requests[-2].url.params["start"] == "2026-10-11"  # 10-16 − lookback_days 5
-
-
-def test_the_job_with_no_bars_held_asks_nothing(settings, fake, clock):
-    result = _run(settings, clock, D1)
-    assert result.rows_upserted == 0 and fake.requests == []
+def _active(settings, *symbols):
+    """Listed active assets, so the universe (and the daily job) holds them; see
+    test_alpaca_bars_job.py for which symbols a run asks."""
+    with store.session(settings.db_path, wait=0) as con:
+        for s in symbols:
+            con.execute(
+                "INSERT INTO alpaca_asset_history (id, symbol, exchange, status, valid_from)"
+                " VALUES (?, ?, 'NASDAQ', 'active', TIMESTAMP '2026-10-12 10:00')",
+                [f"id-{s}", s],
+            )
 
 
 def test_the_watermark_never_moves_back(settings, fake, clock):
     fake.pages = [body("multi_p1.json"), body("multi_p2.json")]
     _load(settings, ["AAPL", "MSFT"])
+    _active(settings, "AAPL", "MSFT")
     _run(settings, clock, D2)
     fake.pages = [body("aapl_2020-08.json")]
     _run(settings, clock, D3)
@@ -513,4 +501,4 @@ def test_the_job_is_in_the_registry_and_its_raw_dataset_is_parsed():
     registry = jobs.load_registry()
     assert "alpaca_bars" in registry
     assert set(registry.get("alpaca_bars").parsers) == {"alpaca_bars"}
-    assert registry.get("alpaca_bars").versioned == ("alpaca_bar",)
+    assert registry.get("alpaca_bars").versioned == ("alpaca_bar", "alpaca_bar_symbol")

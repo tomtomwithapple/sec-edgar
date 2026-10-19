@@ -1,6 +1,6 @@
 # Alpaca market data (usfin)
 
-Status: S6 done — next: S7
+Status: S7 done — next: S8
 Goal: Add free Alpaca US market data (daily bars, the asset list, corporate actions) to usfin as
 new jobs next to EDGAR: archived raw first, stored point-in-time in `data/usfin.duckdb`,
 scheduled, and shown in the existing web UI.
@@ -173,11 +173,13 @@ src/usfin/jobs.py                (edit) add the alpaca modules to the import lis
 src/usfin/cli.py                 (edit) `usfin alpaca backfill bars|corp-actions`
 src/usfin/sources/alpaca/__init__.py, assets.py, corp_actions.py, bars.py, backfill.py
 src/usfin/migrations/022_alpaca_asset.sql, 023_alpaca_corp_action.sql,
-                     024_alpaca_universe.sql, 025_alpaca_bar.sql, 026_alpaca_security.sql,
-                     027_alpaca_adjusted.sql (views/macros; numbers follow the last migration at
-                     the time — amended in S5: the universe, built first, took the next number;
-                     amended after S5: rebased onto main, whose 020_fred / 021_tic came first,
-                     so every alpaca migration moved up by 2)
+                     024_alpaca_universe.sql, 025_alpaca_bar.sql, 026_alpaca_bar_symbol.sql,
+                     027_alpaca_security.sql, 028_alpaca_adjusted.sql (views/macros; numbers
+                     follow the last migration at the time — amended in S5: the universe, built
+                     first, took the next number; amended after S5: rebased onto main, whose
+                     020_fred / 021_tic came first, so every alpaca migration moved up by 2;
+                     amended in S7: 026 remembers invalid and fully asked symbols, security and
+                     adjusted moved up by 1)
 src/usfin/web/prices.py, web/app.py (edit), web/edgar.py (edit),
 web/templates/prices.html, prices_universe.html, base.html (edit, nav), edgar template (edit)
 tests/test_alpaca_*.py, tests/fixtures/alpaca/...,
@@ -328,6 +330,32 @@ newest versions for its own symbols and date range only (not a window over the w
 (4) `volume`/`trade_count` are BIGINT and a non-integer value fails the page loudly. (5) The
 S6 job refreshes only the symbols already in `alpaca_bar`, from watermark − `lookback_days`
 (from `backfill_start` with no watermark); S7 replaces `bars.symbols(ctx)` with the universe.
+*Amended in S7* (migration `026_alpaca_bar_symbol.sql`, `bars.select`): (1) **Symbol marks.**
+Table `alpaca_bar_symbol(symbol, status, first_seen_at, raw_id)`, one row per (symbol, status),
+the first raw response that showed it, no PK: `invalid` when a 400 names the symbol (read from
+the archived body), `history` for every symbol of a request from `backfill_start` or earlier with
+no `end` whose last page (no `next_page_token`) arrived — whole history asked, bars or none. The
+bars parser writes both, so it is a `versioned` table of the job and `usfin reparse alpaca_bars`
+rebuilds it (the request's symbols and `start` are read from `raw_response.url`). (2) **What a
+run asks.** The spec's literal (a)/(b) does not work: (a) gives every active symbol a few days of
+bars, so "no bars" would never let (b) backfill its history; and a well-formed symbol Alpaca has
+nothing for (`X.RT`, `SPAC.WS`, TWTR today) is absent from every answer, so under "no bars" it
+would hold a catch-up place every day, and once more than `new_symbol_cap` of those exist a new
+listing would never be reached. The rule kept: (a) every `asset_active` universe symbol not
+marked `invalid`, watermark − `lookback_days` .. now (today − `lookback_days` with no watermark,
+so a first run on an empty DB is never a whole backfill in one session); (b) up to
+`new_symbol_cap` universe symbols with no mark (neither `invalid` nor `history`), active first,
+then by symbol, from `backfill_start`; (b)'s symbols are left out of the same run's (a). So the
+daily job covers every listed symbol from its first run, (b) walks the rest 200 a day in a stable
+order (new listings ahead of the delisted tail) and asks each one in full once, and an invalid
+symbol costs one 400 ever. (b) runs before (a), both with no `end`. A missed day is inside
+watermark − 5 d (the scheduler's catch-up runs the job once; the window covers the gap). (3) S8's
+backfill can use "no `history` mark" as its to-do list and its resume rule; it marks `history`
+only if each symbol's last stretch is one request from `backfill_start` with no `end` (else it
+must write the mark itself, or the daily (b) will ask those symbols in full once more —
+harmless, 200 a day). (4) Schedule (A9): `alpaca_bars` 20:30 ET, `nyse` calendar and due days,
+`zero_new_rows {after: "20:30"}`, `stale_watermark {n: 1}`, no `value_jump` (raw prices jump at
+splits).
 
 **Backfill.** `usfin alpaca backfill bars [--from 2016-01-04] [--symbols …]`: walks the universe
 in batches; each batch is archived and parsed like the job, in **its own DB session** (open,
@@ -516,8 +544,10 @@ Done when: A2.
 Depends on: S5, S6
 Red: `tests/test_alpaca_bars_job.py` — the job takes active universe symbols over watermark − 5
 .. today plus ≤ `new_symbol_cap` universe symbols with no bars (full history); schedule entry
-20:30 ET `nyse` with A9's rules and no `value_jump`; catch-up after a missed day.
-Green: How › Bars (daily job); `schedule.yaml`.
+20:30 ET `nyse` with A9's rules and no `value_jump`; catch-up after a missed day; invalid
+symbols remembered and skipped, rebuilt by reparse (*amended in S7:* "no bars" became "whole
+history never asked", see How › Bars).
+Green: How › Bars (daily job); `schedule.yaml`; migration `026_alpaca_bar_symbol.sql`.
 Run: live `uv run usfin run alpaca_bars`; then measure and record bars changed between two
 fetches of the same day (and an 18:00 vs 20:30 fetch if the slice runs across them).
 Done when: A9 for bars, A2 revisions measured.
@@ -537,7 +567,7 @@ Depends on: S4, S6
 Red: `tests/test_alpaca_security.py` — fixture-built bars + actions + assets: lookups return
 exactly A7's answers for META, FB, METV, TWTR, IBTA; gap split at > `gap_sessions`; the flat
 META 2022-01-31..06-08 segment is its own key.
-Green: How › Identity; migration `026_alpaca_security.sql` (views/macros).
+Green: How › Identity; migration `027_alpaca_security.sql` (views/macros; 026 before S7).
 Run: live lookups for the same five on the worktree DB.
 Done when: A7.
 
@@ -546,7 +576,7 @@ Depends on: S9
 Red: `tests/test_alpaca_adjusted.py` — AAPL fixture across 2020-08-31 has no jump; reverse split;
 dividend factor uses the last close before ex_date; factors chain across the FB → META rename;
 live test (`-m live`) compares AAPL, MSFT, KO with `adjustment=all` within 0.5 %.
-Green: How › Adjusted prices; migration `027_alpaca_adjusted.sql`.
+Green: How › Adjusted prices; migration `028_alpaca_adjusted.sql` (027 before S7).
 Run: live check output (max relative error per symbol).
 Done when: A6.
 
@@ -587,7 +617,7 @@ Done when: A10 full run recorded, A12 docs; every criterion A1-A12 checked.
 | S4 Corp-action backfill | done | 2026-10-13 | c00846f | 16 new (`tests/test_alpaca_backfill_corp.py`: month windows on `process_date`, `next_page_token`, resume after a stop, open month refetched, an earlier `--from` reuses a later stretch, one DB session per window with another writer between windows, progress under `alpaca_corp_actions_backfill` with no rules/alerts and the job's watermark untouched, reparse rebuilds, no key stored, CLI output/bad date/no keys, a stalled read times out and is retried); suite 838 passed | Live `usfin alpaca backfill corp-actions` 2016-01-01..2026-10-13: 130 month windows, **461 pages**, ~379.6 k actions new (table now 387 849 with S3's window; 6 092 of 2026's backfilled actions matched S3's rows and inserted nothing). Per process_date year: 2016 24 401, 2017 25 331, 2018 26 435, 2019 27 119, 2020 34 024, 2021 36 375, 2022 37 579, 2023 39 626, 2024 42 435, 2025 48 540, 2026 45 976 (incl. future-dated from S3), 2027 8. Per type: cash_dividend 370 017, reverse_split 5 626, name_change 3 692, stock_merger 3 223, cash_merger 1 999, forward_split 972, unit_split 509, worthless_removal 472, stock_dividend 311, stock_and_cash_merger 250, capital_gains_distribution 247, spin_off 241, rights_distribution 121, reorganization 93, partial_call 60, **redemption 16** (a 16th group, 2023 only, not in S3's window). Before 2019 Alpaca has almost only dividends and splits (2016: 3 types; mergers/renames from 2017, numerous from 2020), so A3's merger/rename universe rules reach back mainly from 2020. FB->META rename and TWTR cash merger present. DB 25.96 MB -> 107.49 MB (+81.5 MB); raw store 3.7 MB -> 19.6 MB (gzip; 88.97 MB of bodies over 482 corp-action responses). Time: 75 pages in 113 s (~1.5 s/page) while the Mac was awake; the whole run took ~8 h wall clock over four runs because the Mac (on battery) idle-slept between brief DarkWakes. **Resume, three real stops**: (1) interrupted by me during Dec 2021 -> rerun skipped 71 windows and started at 2021-12; (2) killed by the planning session after a read hung 45+ min across sleep at Oct 2024 -> rerun started at 2024-10; (3) a `ConnectError` (connection refused, the DNS blip) at Aug 2025 page 2 -> rerun started at 2025-08 and finished. Each stop rolled back only its open window. A final rerun fetched only Oct 2026 (3 pages, 2 025 actions, **inserted 0**, 4.3 s). 0 alerts; no duplicate (id, payload); the secret is in no raw or DB file. **Finding (hang):** the shared client's `httpx.Timeout(60, connect=15)` does apply to Alpaca (no override; a `ReadTimeout` is retried; test added), but it is counted on the monotonic clock, which on macOS stops while the system sleeps: a socket half-open across sleep only times out after 60 s of *awake* time, and between 05:12 and 05:58 the Mac woke only for seconds at a time (DarkWakes 05:27, 05:42, 05:56). Not a code bug and not fixed here; run long backfills on AC power or under `caffeinate -s`. **Finding (slow suite):** same cause: pytest's 78 s are awake time; the 5-25 min wall clock is system sleep (the final gate, run while the Mac stayed awake, took 81 s wall for 80 s reported). Plan amended (How > Corporate actions: backfill semantics, the `redemption` group; How > Backfill: corp actions use the same per-window session pattern). |
 | S5 Universe view | done | 2026-10-13 | dd50996 | 13 new (`tests/test_alpaca_universe.py`, built from the S2 asset fixture and S3 action fixtures loaded through the real jobs: listed active/inactive, IBTA both, every config exchange and no OTC asset, TWTR and ATAI mergers in and the acquirer CVR out, SIVBQ removal, SIVB absent, FB renamed + asset, CTNT split adds nothing, an action symbol known only as OTC is out, a listed id gone from the list stays as inactive, newest action version, distinct pairs with a known source, empty store); suite 851 passed | Migration `022_alpaca_universe.sql` (view) applied to the worktree DB (schema 22). Live per source: asset_active 13 224, asset_inactive 2 871, merger 4 776, removal 367, renamed 3 499; 24 737 rows, **23 061 distinct symbols** (15 870 from assets, 7 191 only from action rules; 1 564 symbols reached by 2-4 rules). TWTR in (merger), SIVB out; SIVBQ in (removal; it is in no asset row, so the OTC filter cannot see it); META is also `renamed` (Roundhill's META -> METV, 2022). 512 action symbols dropped as OTC-only. **Findings:** (1) the rule-only symbols come from 2019 on (first action year: 4 before 2019, 77 in 2019, 700-1 250 a year from 2020), so 2016-2019 delistings are mostly absent: the survivorship gap is wider than SIVB. (2) Not all symbols are tickers: 441 rows CUSIP-like (`09175M705` is an inactive *listed* asset; `005CVR014`, `478ESC015` removals; 289 of the 441 come from the asset list itself), plus `.WS` (217 renamed), `.U`, `.RT` (37 removals), `.WI`, `.PRx`; kept, bars slices will see what Alpaca returns. (3) SIVB appears only as the *acquirer* of BPFH (2023). (4) The universe is ~23.1 k symbols, not ~16.1 k: the bars backfill estimate grows ~45 %. Query 0.3 s. Plan amended: migration numbers (universe 022, bars 023), How › Universe (row grain, asset/OTC rules, counts, the pre-2019 gap, odd symbols), How › Backfill (symbol count). |
 | S6 Bars core | done | 2026-10-19 | 967ea66 | 39 new (`tests/test_alpaca_bars.py`, 7 fixtures in `tests/fixtures/alpaca/bars/`: whole live responses byte for byte — AAPL 2015-12-28..2016-01-06 (first bar 2016-01-04 at 05:00Z), AAPL across the 2020-08-31 split raw, AAPL,MSFT at `limit=15` as two pages with MSFT split across them, META/FB/METV around the 2022-01-31 rename with `asof=-`, the real invalid-symbol 400, an empty window); suite 938 passed | Rebased onto main first (FRED/TIC); migrations now 022-025. Live on the worktree DB, one request for AAPL,FB,META,METV,TWTR from 2016-01-04 with no `end`: **8 895 bars**, 10.0 s fetch, 0.07 s insert; AAPL 2 713, FB 1 950 (2016-01-04..), META 1 331 (from 2021-06-30), METV 1 183 (from 2022-01-31), TWTR 1 718 (to 2022-10-27) — the Why counts of 2026-10-12 (2 708 / 1 945 / 1 326) plus the five sessions since. Rerun: **inserted 0**. `usfin run alpaca_bars` twice: rows 0 both (11.4 s from 2016 with no watermark, then 2.4 s from watermark 2026-10-16 − 5 d). `usfin reparse alpaca_bars`: 6 raw responses (two of them the 403s below), 8 895 rows rebuilt in 0.5 s, md5 unchanged, no request. Key id and secret in neither the raw store nor the DB file. **Findings:** (1) the first live attempt sent `end=2026-10-19` (today) and got 403 "subscription does not permit querying recent SIP data"; probed: a date end of today is refused, a timestamp 16 min old is accepted and one 14 min old refused, no `end` is accepted — the job now sends none. (2) A CUSIP-like or `-`/`/` symbol fails the whole batch with a 400 naming it (well-formed unknown symbols are just absent); handled by drop-and-retry, see How › Bars. DB size unchanged at 107.5 MB (8.9 k rows fit existing blocks). |
-| S7 Daily bars job | todo | | | | |
+| S7 Daily bars job | done | 2026-10-19 | HASH | 20 new (`tests/test_alpaca_bars_job.py`: universe written into asset history / corp actions, a fake answering from the S6 AAPL/MSFT bars cut to each request's dates — (a)/(b) split with (b) active first then by symbol and left out of (a), `new_symbol_cap` walking a stable order over runs, a symbol with no bars asked in full once, a caught-up symbol refreshed daily, no watermark = today − 5 not 2016, empty universe asks nothing, a missed 10-15/10-16 caught up by Monday's window, invalid symbols (`005CVR014`, `BF/B`, active `ABC-U`) remembered and never asked again, reparse rebuilds the marks and the bars with no request, no (symbol, status) twice, `history` marked on the last page only and not for a later start or an `end`, schedule entry, `zero_new_rows` + `stale_watermark` raised by a 20:30 run with no new bar, nothing at 18:00 or with the day's bar, `versioned` both tables); 3 S6 job tests adapted to the universe (one superseded test removed, `versioned`, an empty universe); suite 956 passed | Migration `026_alpaca_bar_symbol.sql` applied (schema 26); `usfin reparse alpaca_bars` first marked S6's five symbols `history` from their archived 2016 requests. Live `usfin run alpaca_bars` (Mon 2026-10-19 00:34 ET, watermark 2026-10-16): **165 s, 155 requests, 0 failed**: (a) 131 requests (the 13 024 active symbols outside (b); 13 009 got bars over 10-12..10-16, ~0.55 s a request), 64 964 bars; (b) 2 batches of 100 from 2016 (A..ADCT, the first 200 active symbols never asked), 24 pages (22 with a `page_token`, ~3.6 s a page, up to 7.2 s), 221 663 bars; **286 627 bars inserted**, 13 209 symbols; 200 symbols caught up, **0 invalid symbols found** (no active symbol is CUSIP-like or has `-`/`/`: they sit in the inactive/action tail that (b) reaches after the ~13 k active symbols, or S8); every caught-up symbol had bars; 11 active symbols had no bar since 10-12. Watermark stays 2026-10-16 (Monday's session not traded yet); 0 alerts. Second run 3.5 min later: 188 s, 158 requests (131 daily + 27 pages for ADDS..AINF), 256 325 bars inserted, all from the 200 new symbols: **0 of the 64 964 refetched bars (10-12..10-16) changed**, nor any of S6's 8 895 bars fetched 00:22 ET. A2's 18:00 vs 20:30 comparison was not possible (the slice ran 00:30-00:45 ET on a Monday, after a weekend; nothing was trading) and is left for S8 or later, on a weekday evening. `usfin reparse alpaca_bars`: 319 raw responses, 551 847 rows rebuilt in 7.7 s, md5 of `alpaca_bar` and of `alpaca_bar_symbol` (405 `history` marks) unchanged, no request. Key id and secret in neither the raw store nor the DB file. DB file unchanged at 107.5 MB (DuckDB reused free blocks: 276 of 410 blocks used after run 1, 295 after run 2); `alpaca_bar` is 47 blocks (~11.8 MiB) for 551 847 rows, **~22 bytes a bar**, so 30 M bars ≈ 650 MB; raw store 19.9 → 35.3 MB gzip (+15.4 MB over 2 runs; 62.4 MB of bodies, ~0.11 MB per symbol's full history). **Decisions:** (1) (a)/(b) as How › Bars *Amended in S7*: (a) every active symbol, not only those holding bars, so the daily job covers the listed market from now on; (b) "whole history never asked" instead of "no bars" (with "no bars" a symbol Alpaca has nothing for would take a catch-up place every day and starve new listings). Steady cost of (a): ~131 requests, ~70 s. (2) Invalid and fully asked symbols live in `alpaca_bar_symbol`, written by the parser from the archived 400 bodies and request URLs, so reparse rebuilds them. |
 | S8 Bars backfill command | todo | | | | |
 | S9 Security identity | todo | | | | |
 | S10 Adjusted prices | todo | | | | |
