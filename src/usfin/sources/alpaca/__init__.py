@@ -28,7 +28,8 @@ class AlpacaConfig:
     new_symbol_cap: int = 200
     """Universe symbols whose history was never asked that one daily bars run asks in full."""
     gap_sessions: int = 60
-    """NYSE sessions without a bar that split a symbol into two securities (A7)."""
+    """NYSE sessions without a traded bar (none, or volume 0) that split a symbol into two
+    securities (A7); migration 027 writes the value into its views, a test keeps them equal."""
 
 
 _INTS = ("batch_size", "lookback_days", "new_symbol_cap", "gap_sessions")

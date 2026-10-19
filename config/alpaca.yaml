@@ -12,5 +12,7 @@ backfill_start: 2016-01-04
 # Universe symbols whose history was never asked that one daily bars run asks in full
 # (active first, then by symbol); the other active symbols are refreshed from the watermark.
 new_symbol_cap: 200
-# NYSE sessions with no bar that split a symbol's history into two securities.
+# NYSE sessions with no traded bar (no bar, or volume 0) that split a symbol's history into two
+# securities. Written into migration 027's views too (they cannot read this file); a test keeps
+# the two equal, so change both.
 gap_sessions: 60
