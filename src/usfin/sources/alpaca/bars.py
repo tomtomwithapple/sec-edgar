@@ -35,7 +35,8 @@ gives every active symbol a few days of bars, and a well-formed symbol Alpaca ha
 (`X.RT`, TWTR today) is absent from every answer, so "no bars" would never let (b) reach
 the former and would ask the latter every day. A symbol of (b) is left out of this run's (a); a
 symbol marked `invalid` is in neither. The watermark is the newest bar date seen, never moving
-back. S8's backfill fills the history from 2016 for the whole universe at once.
+back. S8's backfill (`backfill.bars_history`) asks the same to-do list (`unasked`) all at once,
+a batch per DB session.
 """
 
 import json
@@ -264,19 +265,26 @@ def fetch_batch(
 # --- job -------------------------------------------------------------------------------------
 
 
-def select(con: duckdb.DuckDBPyConnection, cap: int) -> tuple[list[str], list[str]]:
-    """(a) the active universe symbols a run refreshes, (b) at most `cap` universe symbols whose
-    history was never asked (active first, then by symbol); neither holds an invalid symbol and
-    (a) leaves out (b)'s."""
-    new = [
+def unasked(con: duckdb.DuckDBPyConnection, cap: int | None = None) -> list[str]:
+    """Universe symbols with no mark (whole history never asked, not invalid), active first,
+    then by symbol; at most `cap`. The daily catch-up's (b) and the backfill's to-do list."""
+    return [
         s
         for (s,) in con.execute(
             "SELECT symbol FROM alpaca_universe"
             f" WHERE symbol NOT IN (SELECT symbol FROM {SYMBOLS})"
-            " GROUP BY symbol ORDER BY bool_or(source = 'asset_active') DESC, symbol LIMIT ?",
-            [cap],
+            " GROUP BY symbol ORDER BY bool_or(source = 'asset_active') DESC, symbol"
+            + (" LIMIT ?" if cap is not None else ""),
+            [cap] if cap is not None else [],
         ).fetchall()
     ]
+
+
+def select(con: duckdb.DuckDBPyConnection, cap: int) -> tuple[list[str], list[str]]:
+    """(a) the active universe symbols a run refreshes, (b) at most `cap` universe symbols whose
+    history was never asked (active first, then by symbol); neither holds an invalid symbol and
+    (a) leaves out (b)'s."""
+    new = unasked(con, cap)
     daily = [
         s
         for (s,) in con.execute(

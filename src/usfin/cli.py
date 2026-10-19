@@ -16,6 +16,7 @@ from usfin import http as usfin_http
 from usfin.settings import ConfigError, load_settings
 from usfin.sources import alfred, bls, bls_calendar, fiscal, nasdaqtrader, treasurydirect
 from usfin.sources.alpaca import backfill as alpaca_backfill
+from usfin.sources.alpaca import bars as alpaca_bars
 from usfin.sources.alpaca import corp_actions as alpaca_corp_actions
 from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
@@ -397,6 +398,63 @@ def alpaca_backfill_corp_actions(
     typer.echo(
         f"windows {result.windows} (fetched {result.fetched}, skipped {result.skipped}),"
         f" pages {result.pages}, actions {result.actions}, inserted {result.inserted}"
+        f" in {time.monotonic() - started:.1f} s"
+    )
+
+
+@alpaca_backfill_app.command("bars")
+def alpaca_backfill_bars(
+    start: str | None = typer.Option(
+        None,
+        "--from",
+        help="First bar date (YYYY-MM-DD); default backfill_start in config/alpaca.yaml"
+        " (2016-01-04). A later date asks less than the whole history and marks nothing.",
+    ),
+    symbols: str | None = typer.Option(
+        None, "--symbols", help="Comma-separated symbols instead of the universe."
+    ),
+) -> None:
+    """Load the whole bar history of every universe symbol never asked in full (or --symbols),
+    a batch per DB session; a rerun resumes after the last finished batch."""
+    try:
+        first = None if start is None else date.fromisoformat(start)
+    except ValueError:
+        raise typer.BadParameter(
+            f"{start!r} is not a YYYY-MM-DD date", param_hint="--from"
+        ) from None
+    named = None
+    if symbols is not None:
+        named = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if not named:
+            raise typer.BadParameter("no symbol given", param_hint="--symbols")
+    settings = load_settings()
+    today = alpaca_backfill._now().astimezone(jobs.ET).date()
+
+    def progress(b: alpaca_backfill.Batch) -> None:
+        bad = f", invalid {' '.join(b.invalid)}" if b.invalid else ""
+        typer.echo(
+            f"batch {b.n}/{b.of} {b.symbols[0]}..{b.symbols[-1]}: pages {b.pages}, bars {b.bars},"
+            f" inserted {b.inserted}, in full {b.complete}{bad} in {b.seconds:.1f} s"
+        )
+
+    started = time.monotonic()
+    try:
+        result = alpaca_backfill.bars_history(
+            settings, today=today, start=first, symbols=named, progress=progress
+        )
+    except store.DatabaseLocked as exc:
+        typer.echo(f"database busy — another process holds the lock ({exc})", err=True)
+        raise typer.Exit(1) from None
+    except ConfigError as exc:
+        typer.echo(f"error: {usfin_http.redact(exc)}", err=True)
+        raise typer.Exit(1) from None
+    except (usfin_http.HttpError, alpaca_bars.BarsError) as exc:
+        typer.echo(f"error: {exc} (rerun to resume)", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(
+        f"symbols {result.named} (skipped {result.skipped}), batches {result.batches},"
+        f" pages {result.pages}, bars {result.bars}, inserted {result.inserted},"
+        f" in full {result.complete}, invalid {len(result.invalid)}"
         f" in {time.monotonic() - started:.1f} s"
     )
 
