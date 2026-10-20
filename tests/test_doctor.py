@@ -258,3 +258,28 @@ def test_the_launchd_example_passes_plutil_lint():
         ["plutil", "-lint", str(PLIST)], capture_output=True, text=True, check=False
     )
     assert out.returncode == 0, out.stdout + out.stderr
+
+
+INSTALL = REPO / "scripts" / "install.sh"
+
+
+def test_install_renders_the_example_for_this_checkout():
+    # --print-plist only renders: no uv sync, no .env, no launchctl
+    out = subprocess.run(
+        ["bash", str(INSTALL), "--print-plist"], capture_output=True, check=True, cwd="/"
+    )
+    plist = plistlib.loads(out.stdout)
+    uv = shutil.which("uv")
+    assert plist["ProgramArguments"] == [uv, "run", "usfin", "serve"]
+    assert plist["WorkingDirectory"] == str(REPO)
+    for key in ("StandardOutPath", "StandardErrorPath"):
+        assert plist[key] == str(REPO / "data" / "usfin-serve.log")
+    assert plist["EnvironmentVariables"]["PATH"].split(":")[0] == str(Path(uv).parent)
+    assert b"tomtomtomtom" not in out.stdout
+
+
+def test_install_rejects_an_unknown_option():
+    out = subprocess.run(
+        ["bash", str(INSTALL), "--bogus"], capture_output=True, text=True, check=False
+    )
+    assert out.returncode != 0 and "unknown option" in out.stderr

@@ -119,9 +119,17 @@ day does not raise it. Alerts: `/alerts` in the UI, `usfin alerts`, and the webh
 
 ### Start at login (launchd)
 
+One step: `scripts/install.sh` runs `uv sync`, checks `.env` (creates it from `.env.example` and
+stops if `SEC_USER_AGENT` or `BLS_CONTACT_EMAIL` is empty; warns on an empty `FRED_API_KEY`),
+`usfin db migrate` and `usfin doctor`, then installs the agent below with this checkout's paths,
+starts it and waits for http://127.0.0.1:8660. Rerun it to reinstall; `--uninstall` stops and
+removes the agent (data kept), `--no-agent` stops before launchd. serve's startup catch-up runs
+every job whose last due fire is later than its last ok run, so a first install fills in by
+itself (the EDGAR bulk load above stays a manual step).
+
 [`deploy/com.tuntun.usfin.serve.plist.example`](deploy/com.tuntun.usfin.serve.plist.example) runs
 `uv run usfin serve` with `WorkingDirectory` = the repo (so `config/` and `.env` resolve),
-`KeepAlive` and a log at `data/usfin-serve.log`. Edit its paths, then:
+`KeepAlive` and a log at `data/usfin-serve.log`. By hand instead: edit its paths, then:
 
 ```sh
 cp deploy/com.tuntun.usfin.serve.plist.example ~/Library/LaunchAgents/com.tuntun.usfin.serve.plist

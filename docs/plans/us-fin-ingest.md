@@ -1882,6 +1882,7 @@ Done when: `usfin run tic` loads the live file, a rerun is a 304 with no new row
 - After close (user, 2026-10-09): every stored dataset gets a page — S38–S41; work is committed straight to `main` from now on.
 - After close (user, 2026-10-13): FRED becomes a scheduled source of its own with its own series list (S42), not only the BLS backfill; the series picked (rates/markets and macro) are a starting set to edit.
 - After S42 (user, 2026-10-13): `config/fred.yaml` grows to 34 series with no code change — d7cae6e adds the investment-assist layer-0 set (DFII10, DTWEXBGS, NFCI, DCOILBRENTEU; 967 719 rows, 928 189 NFCI); 762bf06 adds net liquidity (WTREGEN, RRPONTSYD), EM corporate OAS (BAMLEMCBPIOAS, BAMLEMHBHYCRPIOAS; ICE data from 2023-10-10 only), nowcasts (GDPNOW, WEI), THREEFYTP10, T5YIE, T10YIE, STLFSI4, USEPUINDXD and CCUSMA02IDM618N (IDR per USD; 518 372 rows, 313 457 STLFSI4). Tables unchanged: investment-assist reads `fred_observation_latest` / `fred_as_of` over `usfin serve` (`/series/fred/<id>?format=csv`).
+- After S43 (user, 2026-10-20): `scripts/install.sh` is the one-step install and run (uv sync, `.env` check, migrate, doctor, launchd agent from the example with this checkout's paths, `kickstart` since a RunAtLoad Background agent can stay a pended speculative spawn); serve's startup catch-up fills the gap. 2 new tests (test_doctor).
 - After S32 (user, 2026-10-08): MTS table 1 is derived into true monthly series (S37) rather than plotted/alerted by line position.
 
 ## Close

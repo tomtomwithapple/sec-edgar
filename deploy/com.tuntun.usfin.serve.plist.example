@@ -3,8 +3,8 @@
 <!--
   launchd agent for `usfin serve` (scheduler + web UI on http://127.0.0.1:8660).
 
-  An example: not installed by anything in this repo. To use it, edit the paths below (the uv
-  binary from `which uv`, the repo checkout, the log files), then:
+  scripts/install.sh fills in the paths below for its checkout and installs it. By hand: edit
+  the paths (the uv binary from `which uv`, the repo checkout, the log files), then:
 
     cp deploy/com.tuntun.usfin.serve.plist.example ~/Library/LaunchAgents/com.tuntun.usfin.serve.plist
     plutil -lint ~/Library/LaunchAgents/com.tuntun.usfin.serve.plist
