@@ -239,6 +239,15 @@ def test_cast_auctions_number_currency0_strings_and_nulls():
     assert row["cusip"] == "912797UK1"
 
 
+def test_cast_integer_sent_as_a_decimal_string():
+    # auctions_query `currently_outstanding` (INTEGER) as "83181000000.000000" since 2026-10-21
+    assert fiscal.cast_value("83181000000.000000", "INTEGER") == 83181000000
+    assert fiscal.cast_value("-5.0", "INTEGER") == -5
+    assert fiscal.cast_value("2026", "YEAR") == 2026
+    with pytest.raises(ValueError, match="not an integer"):
+        fiscal.cast_value("1.5", "INTEGER")
+
+
 def test_cast_percentage_and_number():
     rates = fiscal.cast_page(_fixture("avg_interest_rates.json")).rows[0]
     assert rates["avg_interest_rate_amt"] == 3.87

@@ -277,7 +277,11 @@ def cast_value(value: Any, fd_type: str) -> Any:
     if sql == "DECIMAL(24,4)":
         return Decimal(value)
     if sql == "BIGINT":
-        return int(value)
+        # INTEGER columns can come as "83181000000.000000" (auctions_query, 2026-10-21)
+        number = Decimal(value)
+        if number != number.to_integral_value():
+            raise ValueError(f"not an integer: {value!r}")
+        return int(number)
     if sql == "DOUBLE":
         return float(value)
     return value
