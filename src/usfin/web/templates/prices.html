@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/prices">Prices</a>{% if symbol %} › {{ symbol }}{% endif %} · <a href="/prices/universe">Universe</a></p>
+<div class="head">
+  <h1>{% if symbol %}{{ symbol }}: daily prices{% else %}Prices{% endif %}</h1>
+  {% if symbol and table.rows %}<a class="csv" href="{{ csv_href }}">CSV</a>{% endif %}
+</div>
+<form class="query" method="get" action="/prices">
+  <label for="symbol">Symbol</label>
+  <input id="symbol" name="symbol" type="text" value="{{ symbol or '' }}" placeholder="e.g. META" size="10">
+  {% if not adjusted %}<input type="hidden" name="adjusted" value="0">{% endif %}
+  <button type="submit">Show</button>
+</form>
+{% if not symbol %}
+<p class="muted">Alpaca daily bars (SIP, from 2016-01-04) of the security a symbol names today, chained across renames: META shows Meta's bars from its FB years on; FB the ETF that took the symbol in 2025. Browse the symbols in the <a href="/prices/universe">bars universe</a>.</p>
+{% elif not table.rows %}
+<p class="notice warn">no bars stored for {{ symbol }} — is it in the <a href="/prices/universe">universe</a>? Bars arrive with <code>usfin run alpaca_bars</code> or <code>usfin alpaca backfill bars --symbols {{ symbol }}</code>.</p>
+{% else %}
+<p class="sub">{% if segments %}<code>{{ segments[0].security_key }}</code>{% endif %} <span class="muted">· {{ table.rows | length | num }} sessions, {{ table.rows[0].date | cell }} to {{ table.rows[-1].date | cell }}</span></p>
+<p class="pick">Chart:
+  {% if adjusted %}<a href="{{ href(adjusted='1') }}" aria-current="true">adjusted</a> <a href="{{ href(adjusted='0') }}">unadjusted</a>
+  {% else %}<a href="{{ href(adjusted='1') }}">adjusted</a> <a href="{{ href(adjusted='0') }}" aria-current="true">unadjusted</a>{% endif %}
+</p>
+{% if chart %}<figure class="chart-box">{{ chart | safe }}</figure>{% endif %}
+<p class="muted">Adjusted close = close × total-return factor (splits and cash dividends back-adjusted to today, as Alpaca's <code>adjustment=all</code>); close × split factor is split-only. Spin-offs, rights and mergers are not applied.</p>
+
+<h2>{{ segments | length }} segment{{ "" if segments | length == 1 else "s" }} <a class="csv" href="{{ table_csv('segments') }}">CSV</a></h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Security</th><th>Symbol</th><th>From</th><th>To</th><th class="num">Bars</th></tr></thead>
+  <tbody>
+  {% for s in segments %}
+    <tr>
+      <td><code>{{ s.security_key }}</code></td>
+      <td class="name">{{ s.symbol }}</td>
+      <td>{{ s.valid_from | cell }}</td>
+      <td>{{ s.valid_to | cell }}</td>
+      <td class="num">{{ s.bars | num }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>Bars <a class="csv" href="{{ table_csv('bars') }}">CSV</a></h2>
+{% if table.rows | length > html_rows %}<p class="muted">Newest {{ html_rows }} of {{ table.rows | length | num }}; the CSV has all of them.</p>{% endif %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Date</th><th>Symbol</th><th class="num">Open</th><th class="num">High</th><th class="num">Low</th><th class="num">Close</th><th class="num">Volume</th><th class="num">Adj. close</th><th class="num">Split f.</th><th class="num">TR f.</th></tr></thead>
+  <tbody>
+  {% for r in rows_newest %}
+    <tr>
+      <td>{{ r.date | cell }}</td>
+      <td>{{ r.symbol }}</td>
+      <td class="num">{{ r.open | cell }}</td>
+      <td class="num">{{ r.high | cell }}</td>
+      <td class="num">{{ r.low | cell }}</td>
+      <td class="num">{{ r.close | cell }}</td>
+      <td class="num">{{ r.volume | num }}</td>
+      <td class="num">{{ "%.4f" | format(r.adj_close) }}</td>
+      <td class="num">{{ "%.6g" | format(r.split_factor) }}</td>
+      <td class="num">{{ "%.6f" | format(r.tr_factor) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

@@ -252,6 +252,16 @@ PAGES = {
         "/symbols/history?symbol=AAPL&table=versions",
         "/symbols/history?event=delisted",
     ],
+    "/prices": [
+        "/prices",
+        "/prices?symbol=AAPL",
+        "/prices?symbol=aapl&adjusted=0",
+        "/prices?symbol=AAPL&table=segments",
+    ],
+    "/prices/universe": [
+        "/prices/universe",
+        "/prices/universe?status=active&exchange=NASDAQ&delisted=0&matched=1",
+    ],
 }
 """Every GET page route → URLs whose CSV is fetched. A new page needs an entry (or a place in
 FORMS), so a page without a CSV cannot slip in unnoticed."""
@@ -262,7 +272,7 @@ FORMS = {"/edgar"}
 @pytest.fixture(scope="module")
 def full(tmp_path_factory):
     """One DB with a row for every page: a job run, an alert, BLS, FRED, Fiscal, auctions and their
-    cross-check, BLS releases, EDGAR, symbols and their history."""
+    cross-check, BLS releases, EDGAR, symbols and their history, Alpaca bars and assets."""
     tmp = tmp_path_factory.mktemp("full")
     config = tmp / "config"
     shutil.copytree(REPO_CONFIG, config)
@@ -327,6 +337,17 @@ def full(tmp_path_factory):
         con.execute(
             "INSERT INTO symbol_diff VALUES ('nasdaqlisted', ?, 2, NULL, NULL, NULL, true, 2, 0)",
             [SEEN],
+        )
+        con.execute(
+            "INSERT INTO alpaca_asset_history VALUES ('b0b6dd9d-8b9b-48a9-ba46-b9d54906e415',"
+            " 'AAPL', 'Apple Inc. Common Stock', 'NASDAQ', 'active', true, 'us_equity', ?, NULL)",
+            [SEEN],
+        )
+        con.execute(
+            "INSERT INTO alpaca_bar VALUES"
+            " ('AAPL', '2026-10-07', 255.0, 258.0, 254.0, 256.5, 41000000, 520000, 256.1, ?, 1),"
+            " ('AAPL', '2026-10-08', 256.5, 259.0, 255.5, 258.2, 39000000, 500000, 257.4, ?, 1)",
+            [SEEN, SEEN],
         )
     s = scheduler.Scheduler(settings, jobs.Registry(), clock=lambda: NOW)
     yield TestClient(web.create_app(s, manage=False, ui_wait=0.3))

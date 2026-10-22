@@ -2,7 +2,8 @@
 
 Pages: jobs `/`, `/alerts`, the series browser `/series…` (BLS and FRED point in time, the
 auction cross-check `/series/auctions/xcheck` and the BLS release calendar `/series/releases`),
-EDGAR `/edgar…` and `/screen`, and the symbols pages `/symbols/unmatched` and `/symbols/history`.
+EDGAR `/edgar…` and `/screen`, the symbols pages `/symbols/unmatched` and `/symbols/history`, and the
+Alpaca prices pages `/prices` and `/prices/universe`.
 
 `create_app(scheduler)` starts the scheduler and runs catch-up in the app's lifespan and shuts it
 down on exit (`manage=False` leaves both to the caller). Run-now only queues the job on the
@@ -33,11 +34,12 @@ from usfin import __version__, alerts, jobs, store
 from usfin import http as usfin_http
 from usfin.scheduler import ET, Scheduler, next_fires
 from usfin.settings import ConfigError
-from usfin.sources import fiscal
+from usfin.sources import alpaca, fiscal
 from usfin.sources.edgar import concepts as edgar_concepts
 from usfin.sources.edgar import frames as edgar_frames
 from usfin.web import charts, checks, series
 from usfin.web import edgar as web_edgar
+from usfin.web import prices as web_prices
 from usfin.web import symbols as web_symbols
 from usfin.web.tables import (
     Table,
@@ -861,6 +863,135 @@ def create_app(
                 "table_csv": table_csv,
                 "csv_href": csv_href(request),
                 "html_rows": web_symbols.HTML_ROWS,
+            },
+        )
+
+    # --- prices (Alpaca) ------------------------------------------------------------------
+
+    @app.get("/prices")
+    def prices_page(request: Request) -> Response:
+        params = request.query_params
+        symbol = (params.get("symbol") or "").strip().upper() or None
+        which = params.get("table", "bars")
+        adjusted_raw = params.get("adjusted", "1")
+        if which not in web_prices.PRICE_TABLES:
+            raise HTTPException(400, f"table must be one of {', '.join(web_prices.PRICE_TABLES)}")
+        if adjusted_raw not in ("0", "1"):
+            raise HTTPException(400, "adjusted must be 1 (adjusted close) or 0 (unadjusted)")
+        adjusted = adjusted_raw == "1"
+        bar_rows: list[dict[str, Any]] = []
+        segment_rows: list[dict[str, Any]] = []
+        if symbol:
+            with db() as con:
+                bar_rows = web_prices.bars(con, symbol)
+                segment_rows = web_prices.segments(con, symbol, bar_rows) if bar_rows else []
+        stem = f"prices_{_slug(symbol)}" if symbol else "prices"
+        bars_table = Table(stem, web_prices.BAR_COLUMNS, bar_rows)
+        segments_table = Table(f"{stem}_segments", web_prices.SEGMENT_COLUMNS, segment_rows)
+        if symbol and not bar_rows and wants_csv(request):
+            raise HTTPException(404, f"no bars stored for {symbol}")
+        if wants_csv(request):
+            return csv_response(segments_table if which == "segments" else bars_table)
+        value = "adj_close" if adjusted else "close"
+        label = "adjusted close" if adjusted else "close (unadjusted)"
+        chart = (
+            charts.line_chart(
+                series.points(bar_rows, "date", value),
+                title=f"{symbol} {label}",
+                y_label="USD",
+                x_label="Day",
+            )
+            if bar_rows
+            else ""
+        )
+
+        def href(**change: str) -> str:
+            query = {"symbol": symbol or "", "adjusted": adjusted_raw} | change
+            query = {k: v for k, v in query.items() if v and not (k == "adjusted" and v == "1")}
+            return "/prices" + (f"?{urlencode(query)}" if query else "")
+
+        def table_csv(name: str) -> str:
+            query = {k: v for k, v in params.items() if k not in ("format", "table")}
+            return "/prices?" + urlencode({**query, "format": "csv", "table": name})
+
+        return templates.TemplateResponse(
+            request,
+            "prices.html",
+            {
+                "title": f"{symbol} prices" if symbol else "Prices",
+                "nav": "prices",
+                "table": bars_table,
+                "symbol": symbol,
+                "adjusted": adjusted,
+                "chart": chart,
+                "label": label,
+                "segments": segment_rows,
+                "rows_newest": list(reversed(bar_rows))[: web_prices.HTML_ROWS],
+                "html_rows": web_prices.HTML_ROWS,
+                "href": href,
+                "table_csv": table_csv,
+                "csv_href": csv_href(request),
+            },
+            status_code=404 if symbol and not bar_rows else 200,
+        )
+
+    @app.get("/prices/universe")
+    def prices_universe_page(request: Request) -> Response:
+        params = request.query_params
+        which = params.get("table", "universe")
+        status = params.get("status") or None
+        exchange = (params.get("exchange") or "").strip().upper() or None
+        delisted_raw = params.get("delisted", "")
+        matched_raw = params.get("matched", "")
+        known = alpaca.load_config(settings.config_dir).exchanges
+        if which not in web_prices.UNIVERSE_TABLES:
+            raise HTTPException(400, "table must be universe")
+        if status is not None and status not in web_prices.STATUS:
+            raise HTTPException(400, f"status must be one of {', '.join(web_prices.STATUS)}")
+        if exchange is not None and exchange not in known:
+            raise HTTPException(400, f"exchange must be one of {', '.join(known)}")
+        for name, raw_flag in (("delisted", delisted_raw), ("matched", matched_raw)):
+            if raw_flag not in web_prices.FLAG:
+                raise HTTPException(400, f"{name} must be 1, 0 or empty (both)")
+        delisted, matched = web_prices.FLAG[delisted_raw], web_prices.FLAG[matched_raw]
+        with db() as con:
+            rows = web_prices.universe(
+                con, list(known), status=status, exchange=exchange, delisted=delisted,
+                matched=matched,
+            )  # fmt: skip
+        table = Table(
+            web_prices.universe_name(status, exchange, delisted, matched),
+            web_prices.UNIVERSE_COLUMNS,
+            rows,
+        )
+        if wants_csv(request):
+            return csv_response(table)
+
+        def href(**change: str) -> str:
+            query = {
+                "status": status or "", "exchange": exchange or "", "delisted": delisted_raw,
+                "matched": matched_raw,
+            } | change  # fmt: skip
+            query = {k: v for k, v in query.items() if v}
+            return "/prices/universe" + (f"?{urlencode(query)}" if query else "")
+
+        return templates.TemplateResponse(
+            request,
+            "prices_universe.html",
+            {
+                "title": "Universe",
+                "nav": "prices",
+                "table": table,
+                "counts": web_prices.counts(rows),
+                "statuses": web_prices.STATUS,
+                "exchanges": known,
+                "status": status,
+                "exchange": exchange,
+                "delisted_raw": delisted_raw,
+                "matched_raw": matched_raw,
+                "href": href,
+                "csv_href": csv_href(request),
+                "html_rows": web_prices.HTML_ROWS,
             },
         )
 

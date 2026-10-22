@@ -65,9 +65,13 @@ def _json(content: bytes) -> httpx.Response:
 
 @pytest.fixture(scope="module")
 def built(tmp_path_factory) -> Path:
+    return build(tmp_path_factory.mktemp("security"))
+
+
+def build(tmp: Path) -> Path:
     """A DB holding the five symbols' bars, their corporate actions and the asset list, loaded
-    by the real jobs (assets, corporate actions) and the bars job's fetch and store."""
-    tmp = tmp_path_factory.mktemp("security")
+    by the real jobs (assets, corporate actions) and the bars job's fetch and store (also the
+    store of `test_web_prices`)."""
     config = tmp / "config"
     shutil.copytree(REPO_CONFIG, config)
     with pytest.MonkeyPatch.context() as mp:

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="crumbs"><a href="/prices">Prices</a> › Universe</p>
+<div class="head">
+  <h1>Bars universe</h1>
+  <a class="csv" href="{{ csv_href }}">CSV</a>
+</div>
+<p class="muted">Every symbol the Alpaca bars jobs ask for: listed assets (active or inactive) and the symbols of mergers, worthless removals and renames. Status is the asset list's (<code>none</code>: known only from a corporate action); delisted = not active; matched = an active symbol sharing its <code>ticker_norm</code> with an active EDGAR company.</p>
+
+<form class="query" method="get" action="/prices/universe">
+  <label for="status">Status</label>
+  <select id="status" name="status">
+    <option value="">All</option>
+    {% for v in statuses %}<option value="{{ v }}"{% if v == status %} selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  <label for="exchange">Exchange</label>
+  <select id="exchange" name="exchange">
+    <option value="">All</option>
+    {% for v in exchanges %}<option value="{{ v }}"{% if v == exchange %} selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  <label for="delisted">Delisted</label>
+  <select id="delisted" name="delisted">
+    {% for v, label in [("", "Both"), ("1", "Delisted"), ("0", "Active")] %}<option value="{{ v }}"{% if v == delisted_raw %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <label for="matched">EDGAR</label>
+  <select id="matched" name="matched">
+    {% for v, label in [("", "Both"), ("1", "Matched"), ("0", "Unmatched")] %}<option value="{{ v }}"{% if v == matched_raw %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+  {% if status or exchange or delisted_raw or matched_raw %}<a href="/prices/universe">clear</a>{% endif %}
+</form>
+
+{% if not table.rows and not (status or exchange or delisted_raw or matched_raw) %}
+<p class="notice warn">No universe stored yet — run <code>usfin run alpaca_assets</code> and <code>usfin run alpaca_corp_actions</code>.</p>
+{% else %}
+<h2>{{ table.rows | length | num }} symbols</h2>
+<p class="muted">active {{ counts.active | num }} · inactive {{ counts.inactive | num }} · none {{ counts.none | num }} · matched {{ counts.matched | num }}</p>
+{% if table.rows | length > html_rows %}<p class="muted">First {{ html_rows }} of {{ table.rows | length | num }}; the CSV has all of them.</p>{% endif %}
+{% if table.rows %}
+<div class="scroll">
+<table>
+  <thead><tr><th>Symbol</th><th>Status</th><th>Exch.</th><th>Name</th><th>Sources</th><th>First bar</th><th>Last bar</th><th class="num">Bars</th><th>EDGAR</th></tr></thead>
+  <tbody>
+  {% for r in table.rows[:html_rows] %}
+    <tr>
+      <td class="name"><a href="/prices?symbol={{ r.symbol | urlencode }}">{{ r.symbol }}</a></td>
+      <td><span class="status status-{{ 'ok' if r.status == 'active' else 'failed' if r.status == 'none' else 'skipped' }}">{{ r.status }}</span></td>
+      <td>{{ r.exchange | cell }}</td>
+      <td class="wrap">{{ r.name | cell }}</td>
+      <td>{{ r.sources }}</td>
+      <td>{{ r.first_bar | cell }}</td>
+      <td>{{ r.last_bar | cell }}</td>
+      <td class="num">{{ r.bars | num }}</td>
+      <td>{% if r.cik %}<a href="/edgar/{{ r.cik }}">{{ r.edgar_title }}</a>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">no symbol matches these filters</p>
+{% endif %}
+{% endif %}
+{% endblock %}
