@@ -290,6 +290,33 @@ def test_auction_bills_default_to_the_investment_rate(client):
     assert "high_investment_rate" in svg
 
 
+def test_auction_kinds_read_the_2026_10_schema_flags_too(client, db):
+    # TA_WS renamed `tips` -> `inflationProtected` and `cashManagementBillCMB` ->
+    # `cashManagementBill` (S44); `floatingRate` kept its name
+    v2 = {"inflationProtected": "No", "floatingRate": "No", "cashManagementBill": "No"}
+    with store.session(db.db_path, wait=0) as con:
+        for cusip, day, typ, term, flags, hy, hir in [
+            ("91282CAD5", "2026-09-17", "Note", "10-Year", {"inflationProtected": "Yes"}, 2.0, None),
+            ("91282CAE3", "2026-09-23", "Note", "2-Year", {"floatingRate": "Yes"}, None, None),
+            ("912797AB9", "2026-10-06", "Bill", "13-Week", {"cashManagementBill": "Yes"}, None, 4.0),
+        ]:
+            con.execute(
+                "INSERT INTO tsy_security (cusip, auction_date, security_type, security_term,"
+                " offering_amt, high_yield, high_investment_rate, status, payload)"
+                " VALUES (?, ?, ?, ?, 42000000000, ?, ?, 'auctioned', ?)",
+                [cusip, day, typ, term, hy, hir, json.dumps({"cusip": cusip} | v2 | flags)],
+            )
+
+    def cusips(query):
+        return [r["cusip"] for r in _csv(client.get(f"/series/auctions?{query}&format=csv"))]
+
+    assert cusips("type=Note&term=10-Year&kind=nominal") == ["91282CAB9", "91282CAA1"]
+    assert cusips("type=Note&term=10-Year&kind=TIPS") == ["91282CAD5", "91282CAC7"]
+    assert cusips("type=Note&term=2-Year&kind=FRN") == ["91282CAE3"]
+    assert cusips("type=Bill&term=13-Week&kind=CMB") == ["912797AB9"]
+    assert cusips("type=Bill&term=13-Week&kind=nominal") == ["912797AA1"]
+
+
 # --- chart helper ---------------------------------------------------------------------------
 
 

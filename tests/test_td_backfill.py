@@ -140,7 +140,7 @@ def test_each_window_is_one_camelcase_search_request_archived_as_td_search(setti
         ("2026-10-01", "2026-10-08"),
     ]
     for url in api.urls:
-        assert url.params["dateFieldName"] == "auctionDate"
+        assert url.params["dateFieldName"] == "competitiveAuctionCloseDate"
         assert url.params["format"] == "json"
         assert "startdate" not in str(url) and "enddate" not in str(url)
     assert result.windows == 3 and result.fetched == 3 and result.skipped == 0
@@ -202,6 +202,18 @@ def test_an_interrupted_backfill_resumes_after_its_last_fetched_window(settings,
     api.urls.clear()
     result = _backfill(settings, date(2026, 7, 1))
     assert api.windows() == [("2026-09-01", "2026-09-30"), ("2026-10-01", "2026-10-08")]
+    assert result.skipped == 2
+
+
+def test_months_archived_under_the_old_date_field_name_count_as_fetched(settings, api):
+    _backfill(settings, date(2026, 8, 20))
+    with store.session(settings.db_path, wait=0) as con:  # as stored before 2026-10 (S44)
+        con.execute(
+            "UPDATE raw_response SET url = replace(url, 'competitiveAuctionCloseDate', 'auctionDate')"
+        )
+    api.urls.clear()
+    result = _backfill(settings, date(2026, 8, 20))
+    assert api.windows() == [("2026-10-01", "2026-10-08")]
     assert result.skipped == 2
 
 

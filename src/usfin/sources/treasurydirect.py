@@ -7,18 +7,26 @@ Base `https://www.treasurydirect.gov/TA_WS/securities/`. Two watermark keys:
   today).
 - `results`: `auctioned?format=json&days=7` (`td_auctioned`) while the watermark — the newest
   auction date stored *with results* — is within 7 days of today (or unset; history is the
-  backfill's job), otherwise `search?startDate=<wm-7d>&endDate=<today>&dateFieldName=auctionDate
-  &format=json` (`td_search`). The parameter names must be camelCase: lowercase ones are ignored
-  and the whole history (37 MB) comes back.
+  backfill's job), otherwise `search?startDate=<wm-7d>&endDate=<today>
+  &dateFieldName=competitiveAuctionCloseDate&format=json` (`td_search`). The parameter names must
+  be camelCase: lowercase ones are ignored and the whole history (37 MB) comes back. Since the
+  2026-10 schema `dateFieldName=auctionDate` answers 500.
 
-Every response is a JSON list of records, each with the same 120 string-valued keys across the
-whole history (1979 to now, checked 2026-10-08): dates read `YYYY-MM-DDT00:00:00`, a missing
-value is `""`. `parse_record` maps the keys other jobs use to typed columns (`""` → NULL) and
-keeps the whole record in `payload`. A security counts as `auctioned` once any of its high yield,
+Every response is a JSON list of string-valued records: dates read `YYYY-MM-DDT00:00:00`, a
+missing value is `""`. Two schemas exist (S44): every record from 1979 to 2026-10-12 carried the
+same 120 keys (`KNOWN_FIELDS_V1`, the auction date in `auctionDate`); between 2026-10-12 and 10-20
+TA_WS switched to 187 keys (`KNOWN_FIELDS_V2`, the auction date in `competitiveAuctionCloseDate`),
+for the whole history at once. A record's schema is told by which date key it has, and
+`parse_record` maps that schema's keys to typed columns (`FIELD_MAP`, `""` → NULL), so archived
+old-schema bodies still parse to the same rows; the whole record is kept in `payload`. A security counts as `auctioned` once any of its high yield,
 discount rate, investment rate or (FRNs) discount margin is set. Upserts never lower `status` and
 never overwrite a stored value with a blank one, typed or in `payload`, since a feed may list an
-auctioned security as it stood before its auction. A key outside `KNOWN_FIELDS` that no stored
-payload has yet raises `schema_drift` (subject `tsy_security`); it is kept in `payload`.
+auctioned security as it stood before its auction. A payload holds one schema: records of the
+same schema merge key by key, a newer-schema record replaces an older-schema payload whole (an
+older one never replaces a newer), and a row whose typed columns and status are unchanged is not
+rewritten just because the payload arrived in the other schema — the stored old-schema payloads
+stay as they are. A key outside `KNOWN_FIELDS` (both schemas) that no stored payload has yet
+raises `schema_drift` (subject `tsy_security`); it is kept in `payload`.
 
 Backfill (`usfin td backfill [--from]`, `backfill()`): one `search` per calendar month from
 `--from` (default `EARLIEST_AUCTION`, the oldest auction `search` returns, probed 2026-10-08) to
@@ -48,27 +56,41 @@ WINDOW_DAYS = 7
 EARLIEST_AUCTION = date(1979, 10, 31)
 """Oldest auction date `search` returns (probed 2026-10-08: nothing from 1900-01-01 to
 1979-10-30; 171 records from 1979-10-31 to 1980-12-31)."""
+DATE_FIELD = "competitiveAuctionCloseDate"
+"""The auction date's key since the 2026-10 schema, and `search`'s `dateFieldName`."""
+DATE_FIELD_V1 = "auctionDate"
+"""Its key before; `search` with `dateFieldName=auctionDate` answers 500 since (2026-10-20)."""
 DATASET_KEY = {"td_announced": "announced", "td_auctioned": "results", "td_search": "results"}
 log = logging.getLogger("usfin.treasurydirect")
 
-# column -> (upstream key, kind); kinds: str, date, amount (DECIMAL(24,4)), rate (DOUBLE)
-FIELD_MAP: dict[str, tuple[str, str]] = {
-    "cusip": ("cusip", "str"),
-    "auction_date": ("auctionDate", "date"),
-    "security_type": ("securityType", "str"),
-    "security_term": ("securityTerm", "str"),
-    "offering_amt": ("offeringAmount", "amount"),
-    "high_yield": ("highYield", "rate"),
-    "high_discount_rate": ("highDiscountRate", "rate"),
-    "high_investment_rate": ("highInvestmentRate", "rate"),
-    "high_discount_margin": ("highDiscountMargin", "rate"),
-    "price_per100": ("pricePer100", "rate"),
-    "bid_to_cover": ("bidToCoverRatio", "rate"),
-    "primary_dealer_accepted": ("primaryDealerAccepted", "amount"),
-    "indirect_accepted": ("indirectBidderAccepted", "amount"),
-    "direct_accepted": ("directBidderAccepted", "amount"),
-    "issue_date": ("issueDate", "date"),
-    "maturity_date": ("maturityDate", "date"),
+# column -> (2026-10 schema key, pre-2026-10 key, kind); kinds: str, date, amount
+# (DECIMAL(24,4)), rate (DOUBLE). Each renamed key was confirmed by value equality on 286
+# auctions held in both schemas (S44).
+FIELD_MAP: dict[str, tuple[str, str, str]] = {
+    "cusip": ("cusip", "cusip", "str"),
+    "auction_date": (DATE_FIELD, DATE_FIELD_V1, "date"),
+    "security_type": ("securityType", "securityType", "str"),
+    "security_term": ("securityTerm", "securityTerm", "str"),
+    "offering_amt": ("offeringAmount", "offeringAmount", "amount"),
+    "high_yield": ("highYield", "highYield", "rate"),
+    "high_discount_rate": ("highRate", "highDiscountRate", "rate"),
+    "high_investment_rate": ("investmentRate", "highInvestmentRate", "rate"),
+    "high_discount_margin": ("highDiscountMargin", "highDiscountMargin", "rate"),
+    "price_per100": ("highPrice", "pricePer100", "rate"),
+    "bid_to_cover": ("bidToCoverRatio", "bidToCoverRatio", "rate"),
+    "primary_dealer_accepted": (
+        "primaryDealersCompetitiveParAwarded",
+        "primaryDealerAccepted",
+        "amount",
+    ),
+    "indirect_accepted": (
+        "indirectBiddersCompetitiveParAwarded",
+        "indirectBidderAccepted",
+        "amount",
+    ),
+    "direct_accepted": ("directBiddersCompetitiveParAwarded", "directBidderAccepted", "amount"),
+    "issue_date": ("issueDate", "issueDate", "date"),
+    "maturity_date": ("maturityDate", "maturityDate", "date"),
 }
 RESULT_COLUMNS = ("high_yield", "high_discount_rate", "high_investment_rate", "high_discount_margin")
 TYPED = tuple(FIELD_MAP)
@@ -106,8 +128,84 @@ _KNOWN_FIELDS = """
     updatedTimestamp xmlFilenameAnnouncement xmlFilenameCompetitiveResults
     xmlFilenameSpecialAnnouncement tintCusip1 tintCusip2 tintCusip1DueDate tintCusip2DueDate
 """
-KNOWN_FIELDS = frozenset(_KNOWN_FIELDS.split())
-"""The 120 keys every record carried from 1979-10-31 to 2026-10-08."""
+KNOWN_FIELDS_V1 = frozenset(_KNOWN_FIELDS.split())
+"""The 120 keys every record carried from 1979-10-31 to 2026-10-12."""
+
+_KNOWN_FIELDS_V2 = """
+    accruedInterest accruedInterestPerAmount adjustedAccruedInterest
+    adjustedCurrentlyOutstanding adjustedPrice allottedAtHighDiscountMarginPercentage
+    allottedAtHighPercentageDecimals allottedAtHighRatePercentage allottedAtHighYieldPercentage
+    announcedAsCorpusCusip announcedAsCusip announcedAsOriginalDatedDate
+    announcedAsOriginalIssueDate announcedAsReopening announcedAsSecurityDescription
+    announcedAsSecurityType announcementDate approximateAmountRemainingForCompetitiveBids
+    averageDiscountMargin averageInvestmentRate averagePrice averageRate averageYield
+    bidToCoverRatio callable calledDate cashManagementBill competitiveAuctionCloseDate
+    competitiveAuctionCloseDateYear competitiveAuctionCloseTime competitiveBidDecimals
+    competitiveBidExpression competitiveDiscountMarginBidIncrements competitiveRateBidIncrements
+    competitiveYieldBidIncrements corpusCusip cpiBaseReferencePeriod currentlyOutstanding cusip
+    datedDate datedDateDifferentFromIssueDate daysIssueToMaturity
+    directBiddersCompetitiveParAwarded directBiddersCompetitiveParRecognized
+    directBiddersNoncompetitiveParAwarded directBiddersNoncompetitiveParRecognized
+    directParticipantBidsAccepted directParticipantsInsideOfOfferingAmount eligibleToCallDate
+    fimaCompetitiveBidsAccepted fimaCompetitiveInsideOfOfferingAmount
+    fimaNoncompetitiveBidsAccepted fimaNoncompetitiveInsideOfOfferingAmount
+    fimaNoncompetitiveParAwarded fimaNoncompetitiveParRecognized firstInterestPaymentLength
+    floatingRate frequencyOfInterestPayments grandTotalParAwarded grandTotalParRecognized
+    highDiscountMargin highPrice highRate highYield indexDeterminationDate
+    indexDeterminationRate indexRatioOnAnnouncementDate indexRatioOnIssueDate
+    indirectBiddersCompetitiveParAwarded indirectBiddersCompetitiveParRecognized
+    indirectBiddersNoncompetitiveParAwarded indirectBiddersNoncompetitiveParRecognized
+    indirectParticipantBidsAccepted indirectParticipantsInsideOfOfferingAmount
+    inflationProtected interestRate investmentRate issueDate longOrShortFirstInterestPayment
+    longOrShortFirstInterestPaymentPerAmount lowDiscountMargin lowDiscountMarginThreshold
+    lowInvestmentRate lowPrice lowRate lowRateThreshold lowYield lowYieldThreshold maturingDate
+    maturingSecuritiesType maturityDate maximumCompetitiveAward maximumNoncompetitiveAward
+    maximumRecognizedBidAtASingleDiscountMargin maximumRecognizedBidAtASingleRate
+    maximumRecognizedBidAtASingleYield medianDiscountMargin medianDiscountMarginThreshold
+    medianRate medianRateThreshold medianYield medianYieldThreshold
+    minimumAmountRequiredForStrips minimumToBidAmount minimumToIssueAmount multipleToBidAmount
+    multipleToIssueAmount nlpExclusionAmount nlpReportingThreshold
+    noncompetitiveAuctionCloseDate noncompetitiveAuctionCloseDateYear
+    noncompetitiveAuctionCloseTime noncompetitiveBidsAccepted offeringAmount originalDatedDate
+    originalIssueDate originalSecurityTerm pricePerAmount pricingMethod
+    primaryDealerBidsAccepted primaryDealersCompetitiveParAwarded
+    primaryDealersCompetitiveParRecognized primaryDealersInsideOfOfferingAmount
+    primaryDealersNoncompetitiveParAwarded primaryDealersNoncompetitiveParRecognized
+    privateHoldings referenceCpiOnAnnouncementDate referenceCpiOnIssueDate
+    referenceCpiOnOriginalDatedDate reopening retailNoncompetitiveParAwarded
+    retailNoncompetitiveParRecognized securityDescription securityTerm securityTermDay
+    securityTermMonth securityTermWeek securityTermYear securityType series somaBidsAccepted
+    somaHoldings somaInsideOfOfferingAmount somaNoncompetitiveParAwarded
+    somaNoncompetitiveParRecognized spread standardInterestPayment
+    standardInterestPaymentPerAmount strippable
+    subtotalCompetitiveParAwardedInsideOfOfferingAmount
+    subtotalCompetitiveParAwardedOutsideOfOfferingAmount
+    subtotalCompetitiveParRecognizedInsideOfOfferingAmount
+    subtotalCompetitiveParRecognizedOutsideOfOfferingAmount
+    subtotalNoncompetitiveParAwardedInsideOfOfferingAmount
+    subtotalNoncompetitiveParAwardedOutsideOfOfferingAmount
+    subtotalNoncompetitiveParRecognizedInsideOfOfferingAmount
+    subtotalNoncompetitiveParRecognizedOutsideOfOfferingAmount technique
+    tentativeDirectBiddersNoncompetitiveParRecognized tentativeFimaNoncompetitiveParRecognized
+    tentativeIndirectBiddersNoncompetitiveParRecognized
+    tentativePrimaryDealersNoncompetitiveParRecognized
+    tentativeRetailNoncompetitiveParRecognized tentativeSomaNoncompetitiveParRecognized
+    tentativeSubtotalNoncompetitiveParRecognizedInsideOfOfferingAmount
+    tentativeSubtotalNoncompetitiveParRecognizedOutsideOfOfferingAmount tiinConversionFactor
+    tiinConversionFactorPerAmount totalMarketableAmountOutstanding
+    totalParAwardedInsideOfOfferingAmount totalParAwardedOutsideOfOfferingAmount
+    totalParRecognizedInsideOfOfferingAmount totalParRecognizedOutsideOfOfferingAmount
+    treasuryAuctionResultsPressReleaseFileName treasuryAuctionResultsXmlFileName
+    treasuryNoncompetitiveAuctionResultsPressReleaseFileName
+    treasuryNoncompetitiveAuctionResultsXmlFileName
+    treasuryOfferingAnnouncementPressReleaseFileName treasuryOfferingAnnouncementXmlFileName
+    treasuryRetailBidsAccepted treasuryRetailInsideOfOfferingAmount
+    treasurySpecialAnnouncementFileName type unadjustedAccruedInterest
+    unadjustedCurrentlyOutstanding unadjustedPrice updatedTimestamp
+"""
+KNOWN_FIELDS_V2 = frozenset(_KNOWN_FIELDS_V2.split())
+"""The 187 keys of the schema TA_WS switched to between 2026-10-12 and 10-20 (S44)."""
+KNOWN_FIELDS = KNOWN_FIELDS_V1 | KNOWN_FIELDS_V2
 
 
 class TreasuryDirectError(Exception):
@@ -133,7 +231,7 @@ def search_url(start: date, end: date) -> str:
     """Auctions dated `start`..`end`; camelCase names, or upstream returns the whole history."""
     return (
         f"{BASE}/search?startDate={start.isoformat()}&endDate={end.isoformat()}"
-        "&dateFieldName=auctionDate&format=json"
+        f"&dateFieldName={DATE_FIELD}&format=json"
     )
 
 
@@ -168,11 +266,18 @@ def _status(row: Mapping[str, Any]) -> str:
     return "auctioned" if any(row.get(c) is not None for c in RESULT_COLUMNS) else "announced"
 
 
+def schema(record: Mapping[str, Any]) -> int:
+    """2 for the 2026-10 schema (`competitiveAuctionCloseDate`), else 1 (`auctionDate`)."""
+    return 2 if DATE_FIELD in record else 1
+
+
 def parse_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    """One upstream record → typed columns, `status` and `payload` (the record as JSON text)."""
-    row = {col: _cast(record.get(key), kind) for col, (key, kind) in FIELD_MAP.items()}
+    """One upstream record (either schema) → typed columns, `status` and `payload` (the record
+    as JSON text)."""
+    i = 0 if schema(record) == 2 else 1
+    row = {col: _cast(record.get(spec[i]), spec[2]) for col, spec in FIELD_MAP.items()}
     if row["cusip"] is None or row["auction_date"] is None:
-        raise ValueError(f"record without cusip/auctionDate: {dict(record)!r:.200}")
+        raise ValueError(f"record without cusip/auction date: {dict(record)!r:.200}")
     row["status"] = _status(row)
     row["payload"] = json.dumps(record)
     return row
@@ -180,23 +285,31 @@ def parse_record(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def merge(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> dict[str, Any]:
     """`new` over `old`, except that a blank never replaces a stored value (typed or payload)
-    and so `status` never goes back to `announced`."""
+    and so `status` never goes back to `announced`. Payloads of one schema merge key by key; of
+    two, the newer schema's payload is kept whole (one schema per payload)."""
     if old is None:
         return dict(new)
     out = {c: new[c] if new[c] is not None else old[c] for c in TYPED}
     payload = json.loads(old["payload"])
-    for key, value in json.loads(new["payload"]).items():
-        if value != "" or key not in payload:
-            payload[key] = value
+    incoming = json.loads(new["payload"])
+    if schema(incoming) > schema(payload):
+        payload = incoming
+    elif schema(incoming) == schema(payload):
+        for key, value in incoming.items():
+            if value != "" or key not in payload:
+                payload[key] = value
     out["status"] = _status(out)
     out["payload"] = json.dumps(payload)
     return out
 
 
 def _same(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    return all(a[c] == b[c] for c in (*TYPED, "status")) and json.loads(
-        a["payload"]
-    ) == json.loads(b["payload"])
+    """Same typed columns and status, and the same payload — unless the payloads are of two
+    schemas, which alone does not make a row changed (the stored payload is then kept)."""
+    if not all(a[c] == b[c] for c in (*TYPED, "status")):
+        return False
+    pa, pb = json.loads(a["payload"]), json.loads(b["payload"])
+    return schema(pa) != schema(pb) or pa == pb
 
 
 # --- storing -----------------------------------------------------------------------------------
@@ -262,7 +375,7 @@ def upsert(ctx: "jobs.JobContext", records: Sequence[Mapping[str, Any]]) -> int:
         return 0
     # one JSON text parameter, not bound row values (see fiscal.upsert_page)
     text = json.dumps([[r[c] for c in COLUMNS] for r in changed], default=str)
-    types = [_SQL[kind] for _, kind in FIELD_MAP.values()] + ["VARCHAR", "JSON"]
+    types = [_SQL[kind] for _, _, kind in FIELD_MAP.values()] + ["VARCHAR", "JSON"]
     casts = ", ".join(f"r[{i}]::{t}" for i, t in enumerate(types, 1))
     updates = ", ".join(f"{c} = excluded.{c}" for c in COLUMNS if c not in PK)
     con.execute(
@@ -320,9 +433,12 @@ def _store(ctx: "jobs.JobContext", key: str, records: list[dict[str, Any]]) -> i
 
 
 def _parse(ctx: "jobs.JobContext", raw_id: int) -> int:
-    dataset = ctx.con.execute(
-        "SELECT dataset FROM raw_response WHERE id = ?", [raw_id]
-    ).fetchone()[0]
+    """Store one archived response; a non-200 one (the run failed on it) stores nothing."""
+    dataset, status = ctx.con.execute(
+        "SELECT dataset, http_status FROM raw_response WHERE id = ?", [raw_id]
+    ).fetchone()
+    if status != 200:
+        return 0
     return _store(ctx, DATASET_KEY[dataset], _records(ctx, raw_id))
 
 
@@ -375,11 +491,14 @@ def _now() -> datetime:
 
 
 def _fetched(con, url: str) -> bool:
+    """A 200 `td_search` for this window exists, under either `dateFieldName` (months fetched
+    before the 2026-10 schema were archived with `auctionDate`)."""
+    legacy = url.replace(f"dateFieldName={DATE_FIELD}", f"dateFieldName={DATE_FIELD_V1}")
     return (
         con.execute(
             "SELECT count(*) FROM raw_response"
-            " WHERE dataset = 'td_search' AND url = ? AND http_status = 200",
-            [str(httpx.URL(url))],
+            " WHERE dataset = 'td_search' AND url IN (?, ?) AND http_status = 200",
+            [str(httpx.URL(url)), str(httpx.URL(legacy))],
         ).fetchone()[0]
         > 0
     )

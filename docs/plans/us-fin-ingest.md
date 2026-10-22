@@ -590,6 +590,34 @@ forward. Resume: a month that has ended and whose exact URL already has a 200 `t
 is skipped; the open month (its window ends at today) is fetched on every run, and whole once it has
 ended. A parse error after a successful fetch leaves that month counted as fetched: fix the parser
 and `usfin reparse treasurydirect`. The host gets the default 4 rps bucket (`hosts.yaml`).
+*(Amended in S44.)* **TA_WS changed its schema** between 2026-10-12 and 2026-10-20, for the whole
+history at once: 187 keys instead of 120 (42 kept, 78 dropped, 145 new), still strings with
+`""` for missing. `search?…&dateFieldName=auctionDate` now answers 500, so the job and the backfill
+search on **`dateFieldName=competitiveAuctionCloseDate`** (`treasurydirect.DATE_FIELD`); the
+`announced` and `auctioned?days=7` endpoints are unchanged and answer in the new schema. A record's
+schema is told by its date key (`auctionDate` old, `competitiveAuctionCloseDate` new), and
+`FIELD_MAP` holds both names per column. Renamed keys, each confirmed by value equality on every
+auction held in both schemas — 238 of the `announced` body of 2026-10-21, 37 of a `search` for
+2026-09 and 11 of one for 2010-03-01..10, joined on (CUSIP, date) to the stored rows: `auction_date`
+← `competitiveAuctionCloseDate` (`noncompetitiveAuctionCloseDate` carries the same date),
+`high_discount_rate` ← `highRate` (empty for notes/bonds as before), `high_investment_rate` ←
+`investmentRate`, `price_per100` ← `highPrice` (in the old schema `pricePer100` equalled
+`highPrice` on all 8 228 records that had it; 2 914 older records had only `highPrice`),
+`primary_dealer_accepted` / `indirect_accepted` / `direct_accepted` ←
+`primaryDealersCompetitiveParAwarded` / `indirectBiddersCompetitiveParAwarded` /
+`directBiddersCompetitiveParAwarded`; `cusip`, `securityType`, `securityTerm`, `offeringAmount`,
+`highYield`, `highDiscountMargin`, `bidToCoverRatio`, `issueDate`, `maturityDate` kept their names.
+No typed column lost its source. Flags for the auctions page: `tips` → `inflationProtected`,
+`cashManagementBillCMB` → `cashManagementBill`, `floatingRate` and `type` unchanged
+(`web.series.AUCTION_KIND` reads both). Payloads keep one schema each: same-schema records merge
+key by key (never blank) as before, a new-schema record replaces an old-schema payload whole and
+never the other way round, and a row whose typed columns and status did not change is not rewritten
+just because its record now comes in the other schema — so the 11 143 rows stored before the change
+keep their old-schema payloads (the parent's adapter reading `payload` keys must accept both
+names; the table's columns are unchanged). `KNOWN_FIELDS` is the union of both key sets, so the
+switch raises no `schema_drift`. Reparse skips archived non-200 responses (the four 500s of
+2026-10-20..22 made `usfin reparse treasurydirect` fail). The backfill counts a month archived under
+the old `dateFieldName` as fetched.
 Job `auction_xcheck` compares `fd_auctions` to `tsy_security` on (cusip, auction_date) for high
 yield/rate and offering amount; each mismatch raises one `auction_mismatch` alert (C15).
 *(Amended in S14.)* Comparison rules, set against the full history in `data/usfin.duckdb` on
@@ -1830,6 +1858,14 @@ Red: `tests/test_tic.py` — from a 6-series fixture cut from the live file (202
 Green: migration 021 (`tic_series`, `tic_observation`, `tic_as_of`, `tic_observation_latest`), `sources/tic.py` job `tic` (one key `cslt`, schedule `15 17 * * *` federal: the 2026-09 file was modified 16:02 ET; due none), parse in DuckDB (`read_json` + `unnest`, ~3 s for the whole file), web `series_tic.html`, `series_tic_one.html`.
 Done when: `usfin run tic` loads the live file, a rerun is a 304 with no new row, a reparse leaves the table's md5 unchanged.
 
+### S44 — Fix: TreasuryDirect TA_WS schema change
+Depends on: S12, S13, S14
+Why: since 2026-10-20 every `treasurydirect` run failed — `announced` with "record without cusip/auctionDate" (no record carries `auctionDate` any more), `results` with HTTP 500 on `search?…&dateFieldName=auctionDate` — and the `results` watermark stuck at 2026-10-08.
+Red: `tests/test_treasurydirect.py` — fixtures cut from real new-schema responses (`announced_v2`: the `announced` body of 2026-10-21 18:00 UTC; `search_v2`: `search` 2026-09 with `dateFieldName=competitiveAuctionCloseDate`, fetched 2026-10-22): both key sets known (120 and 187); an auction in both schemas parses to the same typed columns; new-schema results land typed (bond, bill, FRN, CMB not yet auctioned); a record with neither date key is refused; a new-schema run stores rows and moves both watermarks with no `schema_drift`; a stored old-schema row seen again in the new schema is not rewritten; new-schema results replace an old-schema announced payload whole; an old-schema record never replaces a new-schema payload; reparse rebuilds a table of both schemas; reparse skips an archived 500; search URLs on `competitiveAuctionCloseDate`. `tests/test_td_backfill.py` — the new `dateFieldName`; months archived under the old one count as fetched. `tests/test_web_series.py` — auction kinds read the new flags (`inflationProtected`, `cashManagementBill`).
+Green: `sources/treasurydirect.py` (`FIELD_MAP` with both names, `schema()`, `KNOWN_FIELDS_V1`/`_V2`, one-schema payload merge, `_same`, non-200 skipped in `_parse`, `DATE_FIELD`), `web/series.py` `AUCTION_KIND`; How › TreasuryDirect (S44 amendment).
+Run: `uv run usfin run treasurydirect`, `usfin reparse treasurydirect` (md5 before/after), `usfin run auction_xcheck`, `/series/auctions`.
+Done when: the results backfill since 10-08 is stored, old rows' md5 unchanged by the run and the reparse, auction_xcheck shows no mismatch for the new rows.
+
 ## Progress
 
 | Slice | Status | Date | Commit | Tests | Run showed |
@@ -1878,6 +1914,7 @@ Done when: `usfin run tic` loads the live file, a rerun is a 304 with no new row
 | S41 UI: filings by others naming a company | done | 2026-10-09 | 9fd5b29 | 1 new (test_web_edgar); test_web_symbols' CSV route list +3 routes, 10 URLs | Not run live: `SEC_USER_AGENT` unset in this clone (serve's catch-up `edgar_tickers` refused with ConfigError, no request sent) |
 | S42 FRED series job | done | 2026-10-13 | 0c467d8 | 26 new (test_fred); test_web_symbols' CSV route list +1 route, 2 URLs; suite 788 passed | Live, `FRED_API_KEY` from `.env`. Probes: `fred/series/observations` clips `realtime_start` to the requested start (DGS10 2026-09-28's 5.24 came back dated 2026-10-05); a full-history request for DGS10 is refused (5 127 vintage dates > 2000). First `usfin run fred` (2000-date windows) failed DFF, DGS10, T10Y2Y with "2001 vintage dates" for windows of 2000 listed ones — FRED counts one more — so `MAX_VINTAGES` = 1998; the 15 others loaded (135 655 rows). Second run `fred #62 ok rows 58129`: the 3 loaded whole (DFF 28 063 rows from 1954, DGS10 16 905 from 1962), the rest incremental. 18 series, 193 751 rows; raw 102 responses, 32 MB. `fred_as_of(DATE '2020-05-01')` GDPC1 2020-01-01 = 18 987.877 (advance estimate, vintage 2020-04-29), then 18 974.702, 18 977.363, 19 010.848, … Third run `fred #63 ok rows 18` (the 18 catalog upserts; observation md5 unchanged), `usfin reparse fred` 117 raw, md5 unchanged. `/series` lists the 18, `/series/fred/DGS10` 200 with chart, jobs page next fire 2026-10-13 18:30 EDT. |
 | S43 TIC cross-border securities job | done | 2026-10-14 | 093c3f1 | 16 new (test_tic); test_web_symbols' CSV route list +2 routes, 4 URLs; suite 808 passed | Probe: `mfh.txt` and `slt1d_globl.csv` stop at 2023-01; `cslt.zip` (8 888 880 B, Last-Modified 2026-09-16 20:02 GMT) answers 304 to If-Modified-Since, ignores If-None-Match. Live `usfin run tic` #69: 1 130 857 rows in 29 s, 4 260 series (3 194 active), watermark 2026-07-01; Japan's Treasury holdings 2026-07 1 103 943 = Table 5's 1 103.9 bn; Indonesia 37 547. Rerun #70: 304, 0 rows, ~10 s. `usfin reparse tic`: 2 raw responses, deleted and rebuilt 1 130 857 rows, md5 fcbcf67d… unchanged |
+| S44 Fix: TreasuryDirect TA_WS schema change | done | 2026-10-22 | (this commit) | 14 new (test_treasurydirect 12, test_td_backfill 1, test_web_series 1); 5 changed (search URLs on the new `dateFieldName`, `KNOWN_FIELDS_V1`); suite 825 passed (811 before) | Evidence: new-schema `announced` raw 6626 (2026-10-21, 250 records) joined 238 stored auctions on (CUSIP, date); one live `search` per window with `dateFieldName=competitiveAuctionCloseDate` — 2026-09 (37 records, 245 KB) and 2010-03-01..10 (11) — all 200, all joined; every `FIELD_MAP` column equal by value on every pair with a stored value (the only differences: three 10-13 bills stored announced, now with results). `auctioned?days=7` answers in the new schema (8 records). `usfin run treasurydirect` #611 ok rows 15 in 7 s: `search` 2026-10-01..10-21 (raw 7177) — 12 new auctions 10-13..10-22 (11 auctioned, the 10-22 CMB, two bills and a TIPS announced) + the three 10-13 bills raised to auctioned; watermarks `results` 2026-10-08 → **2026-10-21**, `announced` 2026-10-21 (capped); no `schema_drift`; the 11 143 rows dated before 10-13 kept their md5 (aafc02e5…). First `usfin reparse treasurydirect` failed on the archived 500 (raw 2379, a dict body) → `_parse` skips non-200s; then 577 raw, table md5 459c5c53… (two new rows took `"No"` flags from the 10-20/10-21 bodies the failing runs had never parsed — never-blank merge), old rows unchanged; a second reparse kept the md5 (its rows 12 are intermediate payload rewinds of `updatedTimestamp`, restored by the later bodies); on a clone with `tsy_security` emptied the rebuild gave the same md5 (11 158 rows). `usfin run auction_xcheck` #612 rows 15: matched 7 894 → 7 901, pending 4 (Fiscal Data results not out yet for 10-19..10-21), td_only 4 (10-21..10-22, not in `fd_auctions` yet), **0 mismatch**, no `auction_mismatch` alert. Kinds over the table unchanged for old rows (CMB 935, TIPS 270, FRN 155, nominal 9 798, the new TIPS and CMB classed by the new flags). Agent kickstarted: `/series/auctions` 200, 6-week bill CSV shows 10-20 and 10-13, `/series/auctions/xcheck` 200. |
 - Decisions after S26 (user, 2026-10-08): drop the `xbrl_fact` PK (~2.2 vs ~10.1 GiB); submissions bulk only for `edgar_company` CIKs (full ZIP would take ~1 day for 993k filers); keep the last 2 bulk ZIPs.
 - After close (user, 2026-10-09): every stored dataset gets a page — S38–S41; work is committed straight to `main` from now on.
 - After close (user, 2026-10-13): FRED becomes a scheduled source of its own with its own series list (S42), not only the BLS backfill; the series picked (rates/markets and macro) are a starting set to edit.

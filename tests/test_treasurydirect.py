@@ -4,8 +4,15 @@ Fixtures (tests/fixtures/treasurydirect/) are real responses recorded on 2026-10
 21:16 ET on 10-07) and trimmed to a few records each, otherwise byte-for-byte as served:
 `announced` (two 2026-10-08 bills not yet auctioned, a note and an FRN already auctioned),
 `auctioned?days=7`, `search` for 2010-03-01..2010-03-10 and for 2026-09-28..2026-10-08.
-Every record in the whole history (11 143 of them, 1979-10-31..2026-10-08) carries the same 120
-keys, so 2010 and today need no field-name map, only camelCase -> typed columns.
+Every record in the whole history (11 143 of them, 1979-10-31..2026-10-08) carried the same 120
+keys, so 2010 and 2026-10-08 need no field-name map, only camelCase -> typed columns.
+
+Between 2026-10-12 and 10-20 TA_WS switched to a new 187-key schema (S44): `announced_v2` is cut
+from the `announced` body of 2026-10-21 18:00 UTC (two 10-22 auctions not yet held — a CMB and a
+TIPS —, the 10-21 bond, the 10-20 bill, and three auctions the old fixtures also hold: the
+91282CRF0 note and 912797WY9 bill of 10-07 and the 91282CRD5 FRN of 09-23), `search_v2` from
+`search?...&dateFieldName=competitiveAuctionCloseDate` for 2026-09-01..09-30 fetched 2026-10-22
+(a bill, a note, the FRN, a TIPS).
 """
 
 import copy
@@ -166,7 +173,7 @@ def test_an_older_watermark_searches_from_seven_days_before_it_with_camelcase_pa
     url = td.results_url("2026-09-30", date(2026, 10, 8))
     assert url == (
         f"https://{HOST}/TA_WS/securities/search?startDate=2026-09-23&endDate=2026-10-08"
-        "&dateFieldName=auctionDate&format=json"
+        "&dateFieldName=competitiveAuctionCloseDate&format=json"
     )
     # lowercase names are ignored upstream and return the whole (37 MB) history
     assert "startdate=" not in url and "enddate=" not in url and "datefieldname" not in url
@@ -174,7 +181,9 @@ def test_an_older_watermark_searches_from_seven_days_before_it_with_camelcase_pa
 
 def test_search_url_builds_any_window():
     url = td.search_url(date(2010, 3, 1), date(2010, 3, 10))
-    assert "startDate=2010-03-01&endDate=2010-03-10&dateFieldName=auctionDate" in url
+    assert (
+        "startDate=2010-03-01&endDate=2010-03-10&dateFieldName=competitiveAuctionCloseDate" in url
+    )
 
 
 # --- parsing -----------------------------------------------------------------------------------
@@ -226,7 +235,7 @@ def test_a_bill_is_auctioned_by_its_discount_rate_and_an_frn_by_its_discount_mar
 
 def test_the_payload_keeps_every_upstream_key():
     record = _fixture("search_current")[0]
-    assert set(record) == td.KNOWN_FIELDS
+    assert set(record) == td.KNOWN_FIELDS_V1
     assert json.loads(td.parse_record(record)["payload"]) == record
 
 
@@ -282,7 +291,7 @@ def test_an_old_watermark_searches_and_2010_rows_land_typed(settings, api):
     assert api.endpoints() == ["announced", "search"]
     assert api.urls[1] == (
         f"https://{HOST}/TA_WS/securities/search?startDate=2010-03-01&endDate=2026-10-08"
-        "&dateFieldName=auctionDate&format=json"
+        "&dateFieldName=competitiveAuctionCloseDate&format=json"
     )
     row = _row(settings, "912828MT4", "2010-03-09")
     assert row["high_yield"] == pytest.approx(1.437)
@@ -370,6 +379,180 @@ def test_reparse_rebuilds_the_identical_table_without_http(settings, api):
     built = _table(settings)
     with store.session(settings.db_path, wait=0) as con:
         con.execute("DELETE FROM tsy_security")
+        result = jobs.reparse(
+            con, td.JOB, settings=settings, now=LATER, transport=FailingTransport()
+        )
+    assert len(result.raw_ids) == 4
+    assert _table(settings) == built
+
+
+# --- the 2026-10 schema (S44) --------------------------------------------------------------------
+
+V2_NOW = datetime(2026, 10, 22, 18, 0, tzinfo=UTC)  # 14:00 ET, today 2026-10-22
+V2_LATER = datetime(2026, 10, 23, 18, 0, tzinfo=UTC)
+SHARED = (("91282CRF0", "2026-10-07"), ("912797WY9", "2026-10-07"), ("91282CRD5", "2026-09-23"))
+
+
+def _typed(row: dict) -> dict:
+    return {c: row[c] for c in (*td.TYPED, "status")}
+
+
+def _v1_record(cusip: str, auction_date: str) -> dict:
+    for name in ("search_current", "auctioned", "announced"):
+        for r in _fixture(name):
+            if (r["cusip"], r["auctionDate"][:10]) == (cusip, auction_date):
+                return r
+    raise KeyError((cusip, auction_date))
+
+
+def _v2_record(cusip: str, auction_date: str) -> dict:
+    for name in ("announced_v2", "search_v2"):
+        for r in _fixture(name):
+            if (r["cusip"], r["competitiveAuctionCloseDate"][:10]) == (cusip, auction_date):
+                return r
+    raise KeyError((cusip, auction_date))
+
+
+def test_the_two_schemas_have_their_own_known_fields():
+    assert len(td.KNOWN_FIELDS_V1) == 120 and len(td.KNOWN_FIELDS_V2) == 187
+    assert td.KNOWN_FIELDS == td.KNOWN_FIELDS_V1 | td.KNOWN_FIELDS_V2
+    for name in ("announced_v2", "search_v2"):
+        for record in _fixture(name):
+            assert set(record) == td.KNOWN_FIELDS_V2
+    for name in ("announced", "auctioned", "search_2010", "search_current"):
+        for record in _fixture(name):
+            assert set(record) == td.KNOWN_FIELDS_V1
+
+
+@pytest.mark.parametrize(("cusip", "auction_date"), SHARED)
+def test_an_auction_in_both_schemas_parses_to_the_same_typed_columns(cusip, auction_date):
+    old = td.parse_record(_v1_record(cusip, auction_date))
+    new = td.parse_record(_v2_record(cusip, auction_date))
+    assert _typed(new) == _typed(old)
+    assert all(new[c] is not None for c in ("price_per100", "bid_to_cover", "direct_accepted"))
+
+
+def test_new_schema_results_land_in_the_typed_columns():
+    bond = td.parse_record(_v2_record("912810UX4", "2026-10-21"))
+    assert bond["auction_date"] == date(2026, 10, 21)  # competitiveAuctionCloseDate
+    assert (bond["security_type"], bond["security_term"]) == ("Bond", "19-Year 10-Month")
+    assert bond["issue_date"] == date(2026, 10, 23)
+    assert bond["maturity_date"] == date(2046, 8, 15)
+    assert bond["offering_amt"] == Decimal(13000000000)
+    assert bond["high_yield"] == pytest.approx(5.469)
+    assert bond["price_per100"] == pytest.approx(95.853363)  # highPrice
+    assert bond["bid_to_cover"] == pytest.approx(2.73)
+    assert bond["primary_dealer_accepted"] == Decimal(1323150000)  # primaryDealersCompetitiveParAwarded
+    assert bond["indirect_accepted"] == Decimal(7502510000)  # indirectBiddersCompetitiveParAwarded
+    assert bond["direct_accepted"] == Decimal(4075000000)  # directBiddersCompetitiveParAwarded
+    assert bond["high_discount_rate"] is None and bond["high_investment_rate"] is None
+    assert bond["status"] == "auctioned"
+    bill = td.parse_record(_v2_record("912797VA2", "2026-10-20"))
+    assert bill["high_discount_rate"] == pytest.approx(3.975)  # highRate
+    assert bill["high_investment_rate"] == pytest.approx(4.049)  # investmentRate
+    assert bill["high_yield"] is None
+    assert bill["status"] == "auctioned"
+    frn = td.parse_record(_v2_record("91282CRD5", "2026-09-23"))
+    assert frn["high_discount_margin"] == pytest.approx(0.04)
+    assert frn["status"] == "auctioned"
+    cmb = td.parse_record(_v2_record("912797UM7", "2026-10-22"))
+    assert cmb["auction_date"] == date(2026, 10, 22)
+    assert all(cmb[f] is None for f in RESULT_FIELDS)
+    assert cmb["status"] == "announced"
+    assert json.loads(cmb["payload"]) == _v2_record("912797UM7", "2026-10-22")
+
+
+def test_a_record_with_neither_date_key_is_refused():
+    record = dict(_v2_record("912797UM7", "2026-10-22"))
+    record["competitiveAuctionCloseDate"] = ""
+    with pytest.raises(ValueError, match="cusip/auction date"):
+        td.parse_record(record)
+
+
+def test_a_new_schema_run_stores_rows_and_moves_both_watermarks(settings, api):
+    api.bodies["announced"] = _fixture("announced_v2")
+    api.bodies["auctioned"] = [_v2_record("912810UX4", "2026-10-21")]
+    result = _run(settings, clock=V2_NOW)
+    assert result.status == "ok", result.error
+    assert result.rows_upserted == 7
+    assert _row(settings, "912810UX4", "2026-10-21")["status"] == "auctioned"
+    assert _row(settings, "91282CRR4", "2026-10-22")["status"] == "announced"
+    assert _watermarks(settings) == {"announced": "2026-10-22", "results": "2026-10-21"}
+    with store.session(settings.db_path, wait=0) as con:
+        assert [a for a in alerts.list_alerts(con) if a["rule"] == "schema_drift"] == []
+
+
+def test_a_stored_old_schema_row_seen_again_in_the_new_schema_is_not_rewritten(settings, api):
+    _run(settings)  # the old-schema fixtures, 2026-10-08
+    before = {pk: _row(settings, *pk) for pk in SHARED}
+    api.bodies["announced"] = _fixture("announced_v2")
+    api.bodies["search"] = [_v2_record(*pk) for pk in SHARED]  # results watermark 10-07: search
+    result = _run(settings, clock=V2_NOW)
+    assert result.status == "ok", result.error
+    assert result.rows_upserted == 4  # only the four auctions the old feeds never listed
+    for pk in SHARED:
+        assert _row(settings, *pk) == before[pk]  # old payload kept as stored
+    again = _run(settings, clock=V2_LATER)
+    assert again.rows_upserted == 0
+
+
+def test_new_schema_results_replace_an_old_schema_announced_row_whole(settings, api):
+    pending_like = next(r for r in _fixture("search_current") if r["cusip"] == "912810UW6")
+    api.bodies["announced"] = [_blanked(_v1_record("912797WY9", "2026-10-07"), pending_like)]
+    api.bodies["auctioned"] = []
+    _run(settings)
+    assert _row(settings, "912797WY9", "2026-10-07")["status"] == "announced"
+    new = _v2_record("912797WY9", "2026-10-07")
+    api.bodies["announced"] = [new]
+    result = _run(settings, clock=V2_NOW)
+    assert result.rows_upserted == 1
+    row = _row(settings, "912797WY9", "2026-10-07")
+    assert row["status"] == "auctioned"
+    assert row["high_discount_rate"] == pytest.approx(4.105)
+    assert row["payload"] == new  # one schema per payload: no union of old and new keys
+
+
+def test_an_old_schema_record_never_replaces_a_new_schema_payload():
+    new = td.parse_record(_v2_record("912797WY9", "2026-10-07"))
+    old = td.parse_record(_v1_record("912797WY9", "2026-10-07"))
+    merged = td.merge(new, old)
+    assert json.loads(merged["payload"]) == _v2_record("912797WY9", "2026-10-07")
+    assert _typed(merged) == _typed(new)
+
+
+def test_reparse_rebuilds_a_table_of_both_schemas(settings, api):
+    _run(settings)
+    api.bodies["announced"] = _fixture("announced_v2")
+    api.bodies["auctioned"] = []
+    api.bodies["search"] = _fixture("search_v2")
+    with store.session(settings.db_path) as con:
+        jobs.set_watermark(con, "treasurydirect", "results", "2026-09-20", today=date(2026, 10, 22))
+    _run(settings, clock=V2_NOW)
+    assert api.urls[-1] == (
+        f"https://{HOST}/TA_WS/securities/search?startDate=2026-09-13&endDate=2026-10-22"
+        "&dateFieldName=competitiveAuctionCloseDate&format=json"
+    )
+    built = _table(settings)
+    with store.session(settings.db_path, wait=0) as con:
+        con.execute("DELETE FROM tsy_security")
+        result = jobs.reparse(
+            con, td.JOB, settings=settings, now=V2_LATER, transport=FailingTransport()
+        )
+    assert len(result.raw_ids) == 4
+    assert _table(settings) == built
+
+
+def test_reparse_skips_archived_error_responses(settings, api):
+    _run(settings)
+    api.status["search"] = 500  # as `dateFieldName=auctionDate` answered from 2026-10-20
+    with store.session(settings.db_path) as con:
+        jobs.set_watermark(con, "treasurydirect", "results", "2026-09-20", today=date(2026, 10, 8))
+    assert _run(settings, clock=LATER).status == "failed"
+    built = _table(settings)
+    with store.session(settings.db_path, wait=0) as con:
+        assert con.execute("SELECT count(*) FROM raw_response WHERE http_status = 500").fetchone()[
+            0
+        ] == 1
         result = jobs.reparse(
             con, td.JOB, settings=settings, now=LATER, transport=FailingTransport()
         )

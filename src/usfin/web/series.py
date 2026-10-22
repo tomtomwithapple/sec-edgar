@@ -40,10 +40,11 @@ LATEST = datetime(9999, 12, 31, tzinfo=UTC).replace(tzinfo=None)
 """As-of instant meaning "every version stored" (naive UTC, as stored)."""
 NUMERIC = ("DECIMAL", "DOUBLE", "BIGINT", "INTEGER", "FLOAT", "HUGEINT", "SMALLINT", "REAL")
 NOT_VALUES = ("src_line_nbr",)
-AUCTION_KIND = (
-    "CASE WHEN payload->>'tips' = 'Yes' THEN 'TIPS'"
+AUCTION_KIND = (  # flags of both TA_WS schemas (the 2026-10 one renamed two, S44)
+    "CASE WHEN 'Yes' IN (payload->>'tips', payload->>'inflationProtected') THEN 'TIPS'"
     " WHEN payload->>'floatingRate' = 'Yes' THEN 'FRN'"
-    " WHEN payload->>'cashManagementBillCMB' = 'Yes' THEN 'CMB' ELSE 'nominal' END"
+    " WHEN 'Yes' IN (payload->>'cashManagementBillCMB', payload->>'cashManagementBill')"
+    " THEN 'CMB' ELSE 'nominal' END"
 )
 AUCTION_FIELDS = (
     "high_yield",
