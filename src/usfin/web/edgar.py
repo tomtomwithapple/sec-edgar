@@ -16,6 +16,13 @@ quarterly `Revenues` is CY2014Q3: it stopped tagging quarters that way, and the 
 revenue tags are not what a bank reports).
 The chart plots one concept: a duration by annual frame (`CY####`), an instant by quarter-end
 (`CY####Q#I`; `CY####I` counts as Q4), each missing period a gap.
+
+**Prices** (plan alpaca-market-data A8, S12): each actively listed bars-universe symbol
+(`alpaca_universe` source `asset_active`) whose `ticker_norm` is an active EDGAR ticker of this
+company — the company with the lowest CIK when several share it, as `/prices/universe?matched=`
+joins — shows the latest close and a 1-year adjusted-close chart of the security it names today
+(`alpaca_bar_adjusted_lookup`). Delisted securities are not joined: `edgar_company` keeps only
+active pairs.
 """
 
 from collections.abc import Sequence
@@ -57,7 +64,10 @@ SCREEN_COLUMNS = (
     "rank", "cik", "name", "value", "tag", "period_start", "period_end", "form", "filed", "accn",
 )  # fmt: skip
 FRAME_COLUMNS = ("rank", "cik", "entity_name", "loc", "value", "period_start", "period_end", "accn")
-TABLES = ("filings", "facts", "insider", "stakes", "party")
+TABLES = ("filings", "facts", "insider", "stakes", "party", "prices")
+PRICE_COLUMNS = (
+    "date", "symbol", "close", "adj_close", "split_factor", "tr_factor", "security_key",
+)  # fmt: skip
 PARTY_COLUMNS = (
     "accession_no", "form", "filed_at", "roles", "filed_under_cik", "filed_under", "source",
 )  # fmt: skip
@@ -326,9 +336,45 @@ def csv_table(con: duckdb.DuckDBPyConnection, cik: int, which: str, cmap: Concep
         table = Table(name, INSIDER_COLUMNS, insider(con, cik)[1])
     elif which == "stakes":
         table = Table(name, STAKE_COLUMNS, stakes(con, cik)[1])
+    elif which == "prices":
+        table = Table(name, PRICE_COLUMNS, prices(con, cik))
     else:
         table = Table(name, PARTY_COLUMNS, party(con, cik)[1])
     return csv_response(table)
+
+
+def price_symbols(con: duckdb.DuckDBPyConnection, cik: int) -> list[str]:
+    """The actively listed Alpaca symbols that are one of the company's active EDGAR tickers."""
+    return [
+        r[0]
+        for r in con.execute(
+            """
+            WITH e AS (
+                SELECT ticker_norm, min(cik) AS cik FROM edgar_company WHERE active
+                GROUP BY ticker_norm
+            )
+            SELECT DISTINCT u.symbol FROM alpaca_universe u
+            JOIN e ON e.ticker_norm = ticker_norm(u.symbol)
+            WHERE e.cik = ? AND u.source = 'asset_active'
+            ORDER BY u.symbol
+            """,
+            [cik],
+        ).fetchall()
+    ]
+
+
+def prices(con: duckdb.DuckDBPyConnection, cik: int) -> list[dict[str, Any]]:
+    """The last year of bars (to each security's newest) of `price_symbols`, by symbol and date."""
+    out: list[dict[str, Any]] = []
+    for symbol in price_symbols(con, cik):
+        out += _dicts(
+            con.execute(
+                f"SELECT {', '.join(PRICE_COLUMNS)} FROM alpaca_bar_adjusted_lookup(?)"
+                " QUALIFY date > max(date) OVER () - INTERVAL 1 YEAR ORDER BY date",
+                [symbol],
+            )
+        )
+    return out
 
 
 def num(value: Any) -> str:

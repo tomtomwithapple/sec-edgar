@@ -604,6 +604,22 @@ def create_app(
             n_insider, insider_rows = web_edgar.insider(con, cik, limit=web_edgar.RECENT)
             n_stakes, stake_rows = web_edgar.stakes(con, cik, limit=web_edgar.RECENT)
             n_party, party_rows = web_edgar.party(con, cik, limit=web_edgar.RECENT)
+            price_rows = web_edgar.prices(con, cik)
+        price_blocks = []
+        for sym in dict.fromkeys(r["symbol"] for r in price_rows):
+            rows = [r for r in price_rows if r["symbol"] == sym]
+            price_blocks.append(
+                {
+                    "symbol": sym,
+                    "last": rows[-1],
+                    "chart": charts.line_chart(
+                        series.points(rows, "date", "adj_close"),
+                        title=f"{sym} adjusted close, 1 year",
+                        y_label="USD",
+                        x_label="Day",
+                    ),
+                }
+            )
         facts = web_edgar.key_facts(per_frame, cmap)
         spec = cmap[chart_concept]
         how, points = web_edgar.chart_series(per_frame, chart_concept)
@@ -651,6 +667,7 @@ def create_app(
                 "n_stakes": n_stakes,
                 "party": party_rows,
                 "n_party": n_party,
+                "prices": price_blocks,
                 "filing_href": web_edgar.filing_href,
                 "table_csv": table_csv,
                 "cmap": cmap,

@@ -16,6 +16,22 @@
   <div><dt>13D/G persons</dt><dd>{{ n_stakes | num }}</dd></div>
 </dl>
 
+{% if prices %}
+<section>
+<div class="head"><h2>Price</h2><a class="csv" href="{{ table_csv('prices') }}">CSV</a></div>
+{% for p in prices %}
+<dl class="facts-head">
+  <div><dt>Symbol</dt><dd><a href="/prices?{{ {'symbol': p.symbol} | urlencode }}">{{ p.symbol }}</a></dd></div>
+  <div><dt>Latest close</dt><dd>{{ p.last.close | num }} <span class="muted">{{ p.last.date | cell }}</span></dd></div>
+</dl>
+{% if p.chart %}<figure class="chart-box">{{ p.chart | safe }}</figure>{% endif %}
+{% endfor %}
+<p class="muted">Alpaca daily bars of the security the symbol names today; the chart is the adjusted close over the last year, the full series is on the prices page.</p>
+</section>
+{% elif head.tickers %}
+<p class="muted">No actively listed Alpaca symbol for {{ head.tickers | join(", ") }}; prices are joined for active securities only.</p>
+{% endif %}
+
 <section>
 <div class="head"><h2>Key facts</h2><a class="csv" href="{{ table_csv('facts') }}">CSV</a></div>
 <p class="muted">Per concept (<code>concepts.yaml</code> v{{ cmap.version }}) the newest annual, quarterly and instant frame; the first listed tag the company reports wins. A period opens the screen for it.</p>
