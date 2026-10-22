@@ -1,10 +1,11 @@
 # sec-edgar (usfin)
 
 US public financial data ingestion: SEC EDGAR, Treasury Fiscal Data, BLS, TreasuryDirect, Nasdaq
-Trader symbol directory. Every response is stored raw first, normalized into one DuckDB file
+Trader symbol directory, FRED, TIC, and Alpaca daily prices (free plan). Every response is stored raw first, normalized into one DuckDB file
 point-in-time, and served by a small local web UI with job status and alerts.
 
-Plan and progress: [docs/plans/us-fin-ingest.md](docs/plans/us-fin-ingest.md).
+Plan and progress: [docs/plans/us-fin-ingest.md](docs/plans/us-fin-ingest.md); Alpaca market data:
+[docs/plans/alpaca-market-data.md](docs/plans/alpaca-market-data.md).
 
 ## Setup
 
@@ -28,6 +29,8 @@ never prints a value.
 | `BLS_CONTACT_EMAIL` | **yes** (BLS calendar) | www.bls.gov answers 403 unless the User-Agent carries a contact email; usfin sends `usfin/<version> (<email>)`. |
 | `BLS_API_KEY` | no | BLS v2 API. Without it the keyless v1 API is used (daily cap; release-day retries every 15 min instead of 10). |
 | `FRED_API_KEY` | no | job `fred` (`config/fred.yaml` series) and `usfin bls alfred-backfill` (BLS first-published history from ALFRED); without it `fred` records `skipped`; never archived or logged. |
+| `APCA_API_KEY_ID` | **yes** (Alpaca) | Alpaca key id from a free paper account (<https://app.alpaca.markets> → API keys). Sent only as a header to `data.alpaca.markets` and `paper-api.alpaca.markets`; never archived, logged or shown. Unset: the Alpaca jobs, backfills and `usfin http get` to an Alpaca host raise `ConfigError` and send nothing. |
+| `APCA_API_SECRET_KEY` | **yes** (Alpaca) | The Alpaca secret for that key id, same rules (unset: `ConfigError`, nothing sent). |
 | `ALERT_WEBHOOK_URL` | no | Each new alert is POSTed here as JSON. |
 | `USFIN_DB` | no | DuckDB file, default `data/usfin.duckdb`. |
 | `USFIN_RAW` | no | Raw store, default `raw/`. |
@@ -55,6 +58,9 @@ Run once, in this order, from the repo (`uv run usfin …`). Times measured on t
 | EDGAR ticker map | `usfin run edgar_tickers` | 10 434 tickers / 8 016 CIKs in 1.3 s — run before the bulk submissions load, which keeps only these companies |
 | Nasdaq Trader symbols | `usfin run symbols` | 13 253 symbols in 5.5 s |
 | EDGAR bulk | see below | ~1 h in all |
+| Alpaca asset list | `usfin run alpaca_assets` | one call, 33 564 assets (14.6 MB) in ~30 s |
+| Alpaca corporate actions | `usfin run alpaca_corp_actions`, then `usfin alpaca backfill corp-actions` (from 2016-01-01, resumable) | daily window 8 214 actions in 13 s; backfill 130 month windows, 461 pages, ~380 k actions, ~1.5 s a page |
+| Alpaca daily bars | `usfin alpaca backfill bars` (after the two above; resumable) | see *Alpaca market data* |
 
 ### EDGAR full bulk load (measured 2026-10-08, S26/S27)
 
@@ -109,6 +115,9 @@ uv run usfin reparse <job>    # rebuild a job's rows from stored raw responses, 
 | edgar_reconcile (+ form4, sched13 chained) | 23:30 | federal |
 | edgar_bulk | Sun 03:00 | any |
 | bls_calendar | Mon 06:00 | any |
+| alpaca_assets | 07:30 | any |
+| alpaca_corp_actions | 07:45 | nyse |
+| alpaca_bars | 20:30 | nyse |
 
 `federal` = weekday and not a US federal holiday; `bond` = federal minus Good Friday; `nyse` =
 NYSE trading day. On another day a fire records a `skipped` run. Fires missed while the Mac slept
@@ -223,3 +232,67 @@ where they differ. On 2026-10-08 that was 26 051 ALFRED rows (payrolls back to 1
 Without `FRED_API_KEY` the command exits 1 and sends nothing. Then, e.g.,
 `SELECT * FROM bls_as_of(DATE '2020-06-01') WHERE series_id = 'LNS14000000'` gives April 2020's
 unemployment rate as first printed (14.7), and `/series/bls/<id>?as_of=YYYY-MM-DD` shows it.
+
+## Alpaca market data
+
+Unadjusted US daily bars from 2016-01-04 (the free SIP window), the asset list and corporate
+actions, from a free Alpaca paper account (`APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`; settings in
+`config/alpaca.yaml`). Both Alpaca hosts have their own bucket in `config/hosts.yaml` at 3
+requests/s (Alpaca allows 200/min); a 429 waits until `X-Ratelimit-Reset`. Raw first: every
+response is archived (source `alpaca`) before it is parsed, and `usfin reparse alpaca_assets`,
+`usfin reparse alpaca_corp_actions` and `usfin reparse alpaca_bars` rebuild their tables with no
+request.
+
+| Job | What it keeps |
+|---|---|
+| `alpaca_assets` | `alpaca_asset_snapshot` (the whole list, OTC included, when it changed), `alpaca_asset_history` (type 2 per Alpaca asset id: name, exchange, status, tradable, class). A row-count swing over 2 % is stored but not diffed. |
+| `alpaca_corp_actions` | `alpaca_corp_action` (every type, versioned by payload; `alpaca_corp_action_latest`), `process_date` from watermark − 30 days to today + 90 days, so announced splits and dividends arrive before their ex-date. |
+| `alpaca_bars` | `alpaca_bar` (`feed=sip`, `adjustment=raw`, `asof=-`; versioned by `first_seen_at`): every active symbol from watermark − 5 days, plus up to `new_symbol_cap` (200) universe symbols whose history was never asked, in full. Symbols Alpaca refuses (CUSIP-like, `-`/`/`) are remembered in `alpaca_bar_symbol` and never asked again. |
+
+The bars universe (`alpaca_universe`) is every asset-list symbol on NYSE, NASDAQ, AMEX, ARCA or
+BATS (active or inactive) plus every symbol a merger, worthless removal or name change names.
+**Survivorship gap:** a delisted symbol in neither (e.g. SIVB) has no bars, and Alpaca's merger
+and rename actions are sparse before 2019, so 2016–2019 delistings are mostly missing.
+
+### Bars backfill
+
+```sh
+uv run usfin run alpaca_assets                     # the universe needs the asset list
+uv run usfin alpaca backfill corp-actions          # and the actions (from 2016-01-01)
+caffeinate -s uv run usfin alpaca backfill bars    # every universe symbol's history, ~3.5 h
+uv run usfin alpaca backfill bars --symbols AAPL,MSFT   # just these (upper-cased)
+```
+
+The bars backfill asks 100 symbols per request from `--from` (default `backfill_start`,
+2016-01-04) with no end date, and stores each batch in its own DB session, so `usfin serve`'s
+jobs are never locked out for long. A stop loses only the open batch: rerun the same command and
+it skips every symbol already asked in full (by any earlier run or the daily job's catch-up). A
+`--from` later than 2016-01-04 refetches that stretch and marks nothing. Progress is under
+`alpaca_bars_backfill` in `usfin jobs` and raises no alert. Run it on AC power under
+`caffeinate -s`: macOS stops the request timeouts while the Mac sleeps, so a socket left open
+across sleep hangs.
+
+Measured 2026-10-22 (one uninterrupted run, on AC power): 22 027 symbols left to ask of the
+23 130 in the universe, 221 batches, 2 921 pages, **23.9 M bars** in 3 h 33 min (active symbols
+~90 s a batch, the inactive and action-only tail ~10-30 s); 21 606 symbols asked in full (2 493
+of all marked have no bars) and 421 refused as invalid; `alpaca_bar` 25.1 M bars over 20 190
+symbols. DB 0.11 → 0.65 GB (~23 bytes a bar), raw store 0.06 → 0.61 GB gzip. A rerun asks
+nothing (0 batches, 0.3 s). Run during a session, it also stores that day's bar so far; the
+20:30 job's fetch replaces it with a new version.
+
+### Reading prices
+
+- `alpaca_bar_latest`, `alpaca_bar_as_of(ts)`: the newest version per (symbol, date), or the one
+  known at `ts`.
+- `alpaca_security_lookup('META')`: the segments of the security a symbol names today (META → FB
+  2016-01-04..2022-06-08 + META from 2022-06-09; FB → the new FB from 2025-06-26); view
+  `alpaca_security` holds every segment. A security is keyed by CUSIP where actions give one.
+- `alpaca_bar_adjusted_lookup('AAPL')` (view `alpaca_bar_adjusted`): close, `adj_close`,
+  `split_factor`, `tr_factor` per date, chained across renames; splits and cash dividends applied
+  (spin-offs and mergers not). Within 0.03 % of Alpaca's own `adjustment=all` for AAPL, MSFT, KO.
+
+Pages in `usfin serve`: `/prices?symbol=META` (the chained series, adjusted chart by default,
+`?adjusted=0` raw; bars and segments tables), `/prices/universe` (every universe symbol with
+status, exchange, delisted, bars and its EDGAR company; filters `status`, `exchange`, `delisted`,
+`matched`), and a Price block on each EDGAR company page (latest close, 1-year adjusted chart) for
+its actively listed symbols. Every table downloads with `?format=csv&table=<name>`.
