@@ -158,6 +158,16 @@ holds the lock on its `data/usfin.duckdb`. The worktree has its own git-ignored 
 the main one: `SEC_USER_AGENT`, `BLS_CONTACT_EMAIL`, the Alpaca keys) and its own `data/` and
 `raw/`; live runs in slices write there. Slices never touch the main checkout.
 
+**Since 2026-10-30 the main checkout holds it all.** The worktree was removed after the merge, and
+its data (by then in `/Users/tommy/Projects/sec-edgar-alpaca-data`) went into the main
+`data/usfin.duckdb` in one transaction: the six `alpaca_*` tables (25 132 840 bars), the 3 977
+alpaca `raw_response` rows renumbered from the main `raw_response_id_seq` (14 811-18 787) with
+every `raw_id` remapped to match, the alpaca `job_run` rows on fresh ids, and the alpaca
+watermarks, backfill progress included. `raw/alpaca` was copied to the main `raw/`. Every row
+count matched, no `raw_id` dangled and every blob is on disk. The `usfin serve` launchd service,
+running pre-merge code since 22 Oct without the Alpaca jobs, was restarted and caught up from the
+merged watermarks. The data folder was then deleted.
+
 Files (new unless marked):
 
 ```
