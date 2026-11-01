@@ -1,5 +1,6 @@
 import json
 import logging
+import sys
 import time
 from collections import Counter
 from collections.abc import Iterator
@@ -31,6 +32,11 @@ app = typer.Typer(no_args_is_help=True)
 @app.callback()
 def main() -> None:
     """usfin: fetch, store and serve US public financial data."""
+    # Output carries non-ASCII (em dash, ≥); Windows streams default to the ANSI code page when
+    # redirected (a pipe, a log file) and would raise UnicodeEncodeError on it.
+    for stream in (sys.stdout, sys.stderr):
+        if (stream.encoding or "").lower() != "utf-8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
 
 
 @app.command()

@@ -147,6 +147,21 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tuntun.usfin.serve.p
 launchctl bootout gui/$(id -u)/com.tuntun.usfin.serve   # to stop it
 ```
 
+### Start at logon (Windows Task Scheduler)
+
+`scripts\schedule.ps1` is the Windows counterpart of `install.sh`: the same steps (`uv sync`,
+`.env` check, `usfin db migrate`, `usfin doctor`), then a task `usfin-serve` that runs
+`uv run usfin serve` at logon with no window (through `scripts\schedule-hidden.js`), restarts it
+if it exits and appends to `data\usfin-serve.log`. The job times stay in `config/schedule.yaml`,
+kept by serve itself.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1            # install (or reinstall) and start
+powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 status     # task state, last result, port 8660
+powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 run        # start the task if serve is down
+powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 uninstall  # stop serve, remove the task (data kept)
+```
+
 ## Analysis access between jobs
 
 DuckDB lets one process hold the file at a time, and a second process cannot even open it

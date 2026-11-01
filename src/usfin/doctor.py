@@ -135,7 +135,7 @@ def db_checks(settings: Settings, free: int) -> list[Check]:
     try:
         con = duckdb.connect(str(path), read_only=True)
     except duckdb.IOException as exc:
-        if store._LOCK_MARKER not in str(exc):
+        if not store.is_lock_conflict(exc):
             return [Check("FAIL", "database", f"{path}: {exc}")]
         pid = _PID.search(str(exc))
         holder = f" (PID {pid[1]})" if pid else ""

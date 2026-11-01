@@ -148,9 +148,9 @@ def test_a_schedule_that_does_not_load_fails(home, disk):
 
 
 HOLDER = """
-import sys, duckdb
+import os, sys, duckdb
 con = duckdb.connect(sys.argv[1])
-print("ready", flush=True)
+print("ready", os.getpid(), flush=True)
 sys.stdin.readline()
 """
 
@@ -170,7 +170,9 @@ def test_db_path_and_lock_state_free_then_held_by_a_second_process(home, disk, m
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )  # fmt: skip
     try:
-        assert holder.stdout.readline().strip() == "ready"
+        # its own PID: on Windows a venv python.exe is a launcher that runs the base one as a child
+        ready, pid = holder.stdout.readline().split()
+        assert ready == "ready"
         start = time.monotonic()
         out = _doctor()
         assert time.monotonic() - start < 5
@@ -178,7 +180,7 @@ def test_db_path_and_lock_state_free_then_held_by_a_second_process(home, disk, m
         holder.communicate("\n", timeout=10)
     assert out.exit_code == 0, out.output  # a held lock is normal while serve runs a job
     lock = _line(out.output, "lock")
-    assert "held by another process" in lock and f"PID {holder.pid}" in lock
+    assert "held by another process" in lock and f"PID {pid}" in lock
 
 
 def test_a_db_not_created_yet_is_reported_and_not_created(home, disk):
@@ -236,6 +238,7 @@ def test_the_newest_bulk_estimate_is_projected_against_free_disk(home, disk):
 # --- launchd -------------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd paths are macOS paths")
 def test_the_launchd_example_runs_usfin_serve_from_the_repo_with_keepalive():
     with PLIST.open("rb") as fh:
         plist = plistlib.load(fh)
@@ -263,6 +266,7 @@ def test_the_launchd_example_passes_plutil_lint():
 INSTALL = REPO / "scripts" / "install.sh"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="install.sh renders macOS paths")
 def test_install_renders_the_example_for_this_checkout():
     # --print-plist only renders: no uv sync, no .env, no launchctl
     out = subprocess.run(

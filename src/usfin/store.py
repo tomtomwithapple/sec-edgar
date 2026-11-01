@@ -19,13 +19,19 @@ import duckdb
 from usfin.settings import load_settings
 
 _MIGRATION_FILE = re.compile(r"^(\d{3})_(\w+)\.sql$")
-_LOCK_MARKER = "Could not set lock on file"
+# DuckDB's message for a file another process holds: POSIX lock, Windows sharing violation
+_LOCK_MARKERS = ("Could not set lock on file", "being used by another process")
 _FIRST_BACKOFF = 0.05
 _MAX_BACKOFF = 1.0
 
 
 class DatabaseLocked(Exception):
     """Another process held the DuckDB file for longer than the lock wait."""
+
+
+def is_lock_conflict(exc: duckdb.IOException) -> bool:
+    """True when the open failed because another process holds the file."""
+    return any(marker in str(exc) for marker in _LOCK_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -99,7 +105,7 @@ def _connect(path: Path, wait: float) -> duckdb.DuckDBPyConnection:
         try:
             return duckdb.connect(str(path))
         except duckdb.IOException as exc:
-            if _LOCK_MARKER not in str(exc):
+            if not is_lock_conflict(exc):
                 raise
             remaining = deadline - time.monotonic()
             if remaining <= 0:
