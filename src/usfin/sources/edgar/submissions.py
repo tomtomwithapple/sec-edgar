@@ -34,6 +34,8 @@ response is archived first (raw dataset `edgar_submissions`, source `edgar`). Wa
 10-digit CIK, value = its newest `filingDate`. The registered job drains the CIKs of open
 `pending_doc` rows of kind `submissions` (queued by the feed for watchlist companies) and closes
 the rows whose accession the company now lists (`pending.mark_done`); `usfin edgar submissions --cik` runs it for given CIKs (`for_ciks`).
+*(S45.)* A main document also upserts the company's `edgar_company_profile` row (SIC, owner org,
+entity type…; `profile.store`), for bulk members too.
 """
 
 import json
@@ -49,6 +51,7 @@ import duckdb
 from usfin import jobs, raw
 from usfin.sources.edgar import filings as edgar_filings
 from usfin.sources.edgar import pending
+from usfin.sources.edgar import profile as edgar_profile
 
 BASE = "https://data.sec.gov/submissions/"
 SOURCE = "edgar"
@@ -195,6 +198,7 @@ def store_document(
         found = filings_from_columns(recent, cik=cik, fetched_on=fetched_on)
         newest = max((f.filed_at for f in found), default=None)
         _store_listing(con, cik, page_listing(doc))
+        edgar_profile.store(con, cik, doc, seen_at=fetched_at, raw_id=raw_id)
     rows = edgar_filings.upsert_filings(con, found)
     parties = edgar_filings.add_parties(con, ((f.accession_no, cik, ROLE) for f in found))
     if is_page and raw_id is not None:

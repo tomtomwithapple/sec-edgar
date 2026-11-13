@@ -89,6 +89,23 @@ store 5.6 GB (two ZIPs per dataset kept by `raw prune --keep 2`), free disk 47.9
 weekly job `edgar_bulk` (Sun 03:00 ET) re-downloads both ZIPs (~13–17 min) and re-parses only
 members whose CRC changed; a run against an unchanged ZIP parses nothing (0 rows).
 
+### Company profiles and SIC (S45)
+
+`edgar_company_profile` holds one row per CIK from the top of its submissions JSON: `sic`,
+`sic_description`, `owner_org`, `entity_type`, `category`, `fiscal_year_end`,
+`state_of_incorporation`, `exchanges`. The view `edgar_company_sic` adds `sic_major` (two-digit
+major group) and `sic_division` / `sic_division_name` (A–K). Every submissions main document the
+per-CIK job or the weekly bulk reconcile parses keeps it current; to fill it from what is already
+stored (no request):
+
+```sh
+uv run usfin edgar profiles   # newest stored submissions.zip, then per-CIK responses; newer wins
+```
+
+Measured 2026-11-13: 8 116 profiles in 70 s, 6 991 with a SIC (funds and trusts have none);
+`/prices/universe?status=active&matched=1` carries `sic`, `sic_description`, `sic_major`,
+`sic_division`, set on 6 735 of 7 182 rows.
+
 ## Running
 
 ```sh

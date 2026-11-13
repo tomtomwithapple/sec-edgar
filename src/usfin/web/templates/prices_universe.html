@@ -39,7 +39,7 @@
 {% if table.rows %}
 <div class="scroll">
 <table>
-  <thead><tr><th>Symbol</th><th>Status</th><th>Exch.</th><th>Name</th><th>Sources</th><th>First bar</th><th>Last bar</th><th class="num">Bars</th><th>EDGAR</th></tr></thead>
+  <thead><tr><th>Symbol</th><th>Status</th><th>Exch.</th><th>Name</th><th>Sources</th><th>First bar</th><th>Last bar</th><th class="num">Bars</th><th>EDGAR</th><th>SIC</th></tr></thead>
   <tbody>
   {% for r in table.rows[:html_rows] %}
     <tr>
@@ -52,6 +52,7 @@
       <td>{{ r.last_bar | cell }}</td>
       <td class="num">{{ r.bars | num }}</td>
       <td>{% if r.cik %}<a href="/edgar/{{ r.cik }}">{{ r.edgar_title }}</a>{% endif %}</td>
+      <td class="wrap">{% if r.sic is not none %}{{ r.sic }} {{ r.sic_description | cell }}{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

@@ -42,6 +42,11 @@ def built(tmp_path_factory) -> Path:
             f" ({META_CIK}, 'META', 'Meta Platforms, Inc.', 'META', true, '2026-10-19'),"
             f" ({TWTR_CIK}, 'TWTR', 'Twitter, Inc.', 'TWTR', false, '2026-10-19')"
         )
+        con.execute(  # S45: META's SIC as its submissions JSON lists it
+            "INSERT INTO edgar_company_profile (cik, name, sic, sic_description) VALUES"
+            f" ({META_CIK}, 'Meta Platforms, Inc.', 7370,"
+            " 'Services-Computer Programming, Data Processing, Etc.')"
+        )
     return tmp
 
 
@@ -198,6 +203,15 @@ def test_universe_lists_every_symbol_once_with_status_and_bars(client):
     assert rows["IBTA"]["status"] == "active"  # one active id and one inactive id
     assert rows["BT"]["status"] == "inactive" and rows["BT"]["delisted"] == "True"
     assert rows["AAPL"]["bars"] == "0" and rows["AAPL"]["first_bar"] == ""
+
+
+def test_universe_carries_the_matched_company_sic_and_its_division(client):
+    rows = _universe(client)
+    meta = rows["META"]
+    assert (meta["sic"], meta["sic_major"], meta["sic_division"]) == ("7370", "73", "I")
+    assert meta["sic_description"].startswith("Services-Computer Programming")
+    assert rows["TWTR"]["sic"] == "" and rows["AAPL"]["sic"] == ""  # unmatched / no profile
+    assert "7370 Services-Computer Programming" in client.get("/prices/universe").text
 
 
 def test_universe_page_links_symbols_to_prices_and_matched_to_edgar(client):

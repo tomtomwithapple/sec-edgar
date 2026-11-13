@@ -23,6 +23,7 @@ from usfin.sources.edgar import bulk as edgar_bulk
 from usfin.sources.edgar import companyfacts as edgar_companyfacts
 from usfin.sources.edgar import concepts as edgar_concepts
 from usfin.sources.edgar import frames as edgar_frames
+from usfin.sources.edgar import profile as edgar_profile
 from usfin.sources.edgar import submissions as edgar_submissions
 from usfin.sources.edgar import tickers as edgar_tickers
 
@@ -832,6 +833,39 @@ def edgar_backfill_cmd(
         )
         raise typer.Exit(1)
     if loaded.errors:
+        raise typer.Exit(1)
+
+
+@edgar_app.command("profiles")
+def edgar_profiles_cmd() -> None:
+    """Fill `edgar_company_profile` (SIC, owner org, entity type) from stored submissions: the
+    newest bulk submissions.zip's main members for `edgar_company` CIKs, then every per-CIK
+    response. No request; newer responses win."""
+    settings = load_settings()
+    spec = edgar_bulk.DATASETS["submissions"]
+    started = time.monotonic()
+    with _db_session(apply_migrations=True) as con:
+        zip_id = edgar_bulk.newest_zip(con, spec)
+        if zip_id is None:
+            typer.echo("no stored bulk submissions ZIP; per-CIK responses only")
+        else:
+            typer.echo(f"reading raw {zip_id}")
+        done = edgar_profile.backfill(
+            con, raw_dir=settings.raw_dir, zip_raw_id=zip_id, ciks=edgar_bulk.company_ciks(con),
+            name_re=edgar_submissions.NAME,
+            progress=lambda b: typer.echo(f"  {b.members} members"),
+        )  # fmt: skip
+        total, with_sic = con.execute(
+            "SELECT count(*), count(sic) FROM edgar_company_profile"
+        ).fetchone()
+    typer.echo(
+        f"members {done.members}, responses {done.responses}, written {done.written},"
+        f" errors {len(done.errors)}; profiles {total}, with SIC {with_sic}"
+        f" in {time.monotonic() - started:.1f} s"
+    )
+    for err in done.errors[:5]:
+        typer.echo(f"  error: {err}", err=True)
+    if done.errors:
         raise typer.Exit(1)
 
 

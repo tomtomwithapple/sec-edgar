@@ -10,7 +10,8 @@
   one does, else `none`: known only from a merger, removal or rename), the exchange of that
   asset, its rules (`sources`), `delisted` (not active), its stored bars and, for an active
   symbol only, the active EDGAR company sharing its `ticker_norm` (A8: delisted symbols are not
-  joined, `edgar_company` keeps only active pairs).
+  joined, `edgar_company` keeps only active pairs), with that company's SIC code, title, major
+  group and division from `edgar_company_sic` (S45; NULL until its profile is stored).
 """
 
 from typing import Any
@@ -30,7 +31,8 @@ FLAG = {"": None, "0": False, "1": True}
 UNIVERSE_TABLES = ("universe",)
 UNIVERSE_COLUMNS = (
     "symbol", "status", "exchange", "name", "sources", "delisted", "first_bar", "last_bar",
-    "bars", "cik", "edgar_ticker", "edgar_title",
+    "bars", "cik", "edgar_ticker", "edgar_title", "sic", "sic_description", "sic_major",
+    "sic_division",
 )  # fmt: skip
 
 
@@ -143,11 +145,13 @@ def universe(
                             ELSE 'none' END AS status,
                        a.exchange, a.name, u.sources, NOT u.active AS delisted,
                        b.first_bar, b.last_bar, coalesce(b.bars, 0) AS bars,
-                       e.cik, e.ticker AS edgar_ticker, e.title AS edgar_title
+                       e.cik, e.ticker AS edgar_ticker, e.title AS edgar_title,
+                       p.sic, p.sic_description, p.sic_major, p.sic_division
                 FROM u
                 LEFT JOIN best a USING (symbol)
                 LEFT JOIN bar b USING (symbol)
                 LEFT JOIN edgar e ON u.active AND e.ticker_norm = ticker_norm(u.symbol)
+                LEFT JOIN edgar_company_sic p ON p.cik = e.cik
             )
             SELECT * FROM row WHERE {" AND ".join(where)} ORDER BY symbol
             """,
